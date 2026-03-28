@@ -1,0 +1,235 @@
+"""
+engine.py — Ollama client with model switching.
+
+Different tasks need different models:
+  - "reason"  → deep analysis, architecture parsing, rule generation
+  - "code"    → file generation, fix application
+  - "quick"   → fast classification, yes/no decisions, small edits
+
+The engine auto-detects available models and picks the best one per role,
+or you can pin models explicitly.
+"""
+
+import json
+import os
+import re
+import time
+import urllib.request
+from datetime import datetime
+
+# ---------------------------------------------------------------------------
+# Model role defaults — ordered by preference (first available wins)
+# ---------------------------------------------------------------------------
+MODEL_PREFERENCES = {
+    "reason": [
+        "deepseek-r1:32b", "deepseek-r1:14b", "deepseek-r1:8b",
+        "qwen2.5:32b", "qwen2.5:14b", "qwen3:32b", "qwen3:14b",
+        "llama3.1:70b", "llama3.1:8b", "gemma2:27b",
+        "deepseek-coder-v2:16b",  # fallback — can reason okay
+    ],
+    "code": [
+        "deepseek-coder-v2:16b", "qwen2.5-coder:32b", "qwen2.5-coder:14b",
+        "qwen2.5-coder:7b", "codellama:34b", "codellama:13b",
+        "deepseek-r1:14b",  # fallback — can code okay
+        "llama3.1:8b",
+    ],
+    "quick": [
+        "qwen2.5-coder:7b", "qwen2.5:7b", "llama3.1:8b",
+        "gemma2:9b", "phi3:mini",
+        "deepseek-coder-v2:16b",  # fallback
+    ],
+}
+
+# Context windows per role
+CTX_DEFAULTS = {
+    "reason": 16384,
+    "code": 32768,
+    "quick": 4096,
+}
+
+TEMP_DEFAULTS = {
+    "reason": 0.15,
+    "code": 0.1,
+    "quick": 0.05,
+}
+
+
+class Engine:
+    """Ollama client with automatic model selection per task role."""
+
+    def __init__(self, url="http://localhost:11434", models=None):
+        """
+        Args:
+            url: Ollama base URL
+            models: Optional dict pinning roles → model names.
+                    e.g. {"reason": "deepseek-r1:14b", "code": "deepseek-coder-v2:16b"}
+                    Unpinned roles auto-select from available models.
+        """
+        self.url = url.rstrip("/")
+        self.pinned = models or {}
+        self._available = None  # lazy-loaded
+        self._resolved = {}     # role → resolved model name
+
+    # ── Connection & model discovery ──
+
+    def test(self):
+        """Test connection, return (ok, available_models, message)."""
+        try:
+            req = urllib.request.Request(f"{self.url}/api/tags")
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                models = [m["name"] for m in data.get("models", [])]
+                self._available = models
+                self._resolve_models()
+                return True, models, f"Connected — {len(models)} model(s)"
+        except Exception as e:
+            return False, [], f"Cannot reach {self.url}: {e}"
+
+    def _resolve_models(self):
+        """Pick the best available model for each role."""
+        if self._available is None:
+            self.test()
+            if self._available is None:
+                return
+
+        for role in ("reason", "code", "quick"):
+            # Check pinned first
+            if role in self.pinned:
+                self._resolved[role] = self.pinned[role]
+                continue
+
+            # Walk preference list, pick first available
+            for pref in MODEL_PREFERENCES[role]:
+                if pref in self._available:
+                    self._resolved[role] = pref
+                    break
+                # Partial match — "deepseek-coder-v2" matches "deepseek-coder-v2:16b"
+                for avail in self._available:
+                    if pref.split(":")[0] in avail:
+                        self._resolved[role] = avail
+                        break
+                if role in self._resolved:
+                    break
+
+            # Ultimate fallback — use whatever's available
+            if role not in self._resolved and self._available:
+                self._resolved[role] = self._available[0]
+
+    def model_for(self, role):
+        """Get the resolved model name for a role."""
+        if not self._resolved:
+            self._resolve_models()
+        return self._resolved.get(role, self.pinned.get("code", "llama3.1:8b"))
+
+    def print_model_map(self):
+        """Print which model is assigned to which role."""
+        if not self._resolved:
+            self._resolve_models()
+        print(f"\n  Model assignments:")
+        for role in ("reason", "code", "quick"):
+            model = self._resolved.get(role, "?")
+            pinned = " (pinned)" if role in self.pinned else " (auto)"
+            print(f"    {role:<8} → {model}{pinned}")
+        print()
+
+    # ── Generation ──
+
+    def generate(self, prompt, *, role="code", temperature=None, num_ctx=None,
+                 timeout=1800):
+        """Send prompt to Ollama. Model selected by role."""
+        model = self.model_for(role)
+        data = {
+            "model": model,
+            "prompt": prompt,
+            "stream": False,
+            "options": {
+                "temperature": temperature if temperature is not None else TEMP_DEFAULTS.get(role, 0.1),
+                "num_ctx": num_ctx or CTX_DEFAULTS.get(role, 16384),
+            },
+        }
+        req = urllib.request.Request(
+            f"{self.url}/api/generate",
+            json.dumps(data).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            result = json.loads(resp.read().decode("utf-8"))
+            return result.get("response", "").strip()
+
+    def chat(self, messages, *, role="code", temperature=None, num_ctx=None,
+             timeout=1800):
+        """Send chat messages to Ollama. Model selected by role."""
+        model = self.model_for(role)
+        data = {
+            "model": model,
+            "messages": messages,
+            "stream": False,
+            "options": {
+                "temperature": temperature if temperature is not None else TEMP_DEFAULTS.get(role, 0.1),
+                "num_ctx": num_ctx or CTX_DEFAULTS.get(role, 16384),
+            },
+        }
+        req = urllib.request.Request(
+            f"{self.url}/api/chat",
+            json.dumps(data).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            result = json.loads(resp.read().decode("utf-8"))
+            return result.get("message", {}).get("content", "").strip()
+
+
+# ---------------------------------------------------------------------------
+# Utilities used everywhere
+# ---------------------------------------------------------------------------
+def strip_fences(text):
+    """Remove markdown code fences."""
+    text = re.sub(r"^```[\w]*\n?", "", text)
+    text = re.sub(r"\n?```\s*$", "", text)
+    return text
+
+
+def extract_json(text):
+    """Extract JSON from model output that may have wrapping text."""
+    text = strip_fences(text)
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+    for pattern in [r'\{[\s\S]*\}', r'\[[\s\S]*\]']:
+        m = re.search(pattern, text)
+        if m:
+            try:
+                return json.loads(m.group())
+            except json.JSONDecodeError:
+                continue
+    return None
+
+
+def read_file(path, max_chars=80_000):
+    """Read file, return (content, error)."""
+    try:
+        if os.path.getsize(path) > max_chars:
+            return None, f"too large ({os.path.getsize(path):,} chars)"
+        with open(path, "r", encoding="utf-8") as f:
+            return f.read(), None
+    except UnicodeDecodeError:
+        return None, "binary"
+    except Exception as e:
+        return None, str(e)
+
+
+def fmt_time(seconds):
+    h, rem = divmod(int(seconds), 3600)
+    m, s = divmod(rem, 60)
+    if h: return f"{h}h {m}m {s}s"
+    if m: return f"{m}m {s}s"
+    return f"{s}s"
+
+
+def ts():
+    return datetime.now().strftime("%H:%M:%S")
+
+
+def log(msg):
+    print(f"[{ts()}] {msg}")

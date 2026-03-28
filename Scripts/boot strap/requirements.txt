@@ -1,0 +1,24 @@
+# Common
+pandas
+numpy
+scipy
+pydantic
+
+# Ingestion
+garmindb
+garth
+trainerroad-export
+openmeteo-requests
+
+# Storage & RAG
+influxdb-client
+chromadb
+sentence-transformers
+
+# Inference
+requests # For Ollama API
+
+# Development
+jupyter
+pytest
+python-dotenv

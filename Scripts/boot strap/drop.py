@@ -1,0 +1,273 @@
+#!/usr/bin/env python3
+"""
+drop.py — Drop into any project and build it.
+
+This is the single entry point. It:
+  1. Auto-detects your project structure (language, framework, layers)
+  2. Auto-generates layer rules matching production patterns
+  3. Reads your architecture doc (if present) for project-specific rules
+  4. Scaffolds code, generates tests, reviews, fixes — whatever you ask
+
+Model switching happens automatically:
+  - Reasoning model for architecture analysis and rule generation
+  - Code model for file generation and fixes
+  - Quick model for classification and yes/no decisions
+
+Usage:
+    python scripts/drop.py                             # detect + show plan
+    python scripts/drop.py develop                     # scaffold from arch doc
+    python scripts/drop.py develop --apply             # write scaffolded files
+    python scripts/drop.py test                        # generate test suites
+    python scripts/drop.py test --apply                # write test files
+    python scripts/drop.py review                      # code review
+    python scripts/drop.py fix --apply                 # apply review fixes
+    python scripts/drop.py all                         # full pipeline (dry-run)
+    python scripts/drop.py all --apply                 # full pipeline (write)
+
+    python scripts/drop.py --layer api,db develop      # target specific layers
+    python scripts/drop.py --reason-model deepseek-r1:14b develop
+
+    python scripts/drop.py --url http://192.168.50.46:11434  # custom Ollama URL
+"""
+
+import argparse
+import os
+import subprocess
+import sys
+import time
+from datetime import datetime
+
+# Ensure the script directory is on the path so imports work
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+if SCRIPT_DIR not in sys.path:
+    sys.path.insert(0, SCRIPT_DIR)
+
+from engine import Engine, fmt_time, log
+from detect import detect, print_detection
+from rules import build_all_rules, save_rules, load_rules
+
+
+def cmd_detect(args, engine, info, rules):
+    """Just detect and show what we found."""
+    print_detection(info)
+    print(f"\n  Rules generated for {len(rules)} layers.")
+    for key, r in rules.items():
+        count = len([l for l in r.split("\n") if l.strip().startswith("-")])
+        print(f"    {key:<30} {count:>2} rules")
+    print(f"\n  Next steps:")
+    if info.get("arch_doc"):
+        print(f"    python {os.path.basename(__file__)} develop          # scaffold from arch doc")
+    else:
+        print(f"    Create docs/ARCHITECTURE.md first, then:")
+        print(f"    python {os.path.basename(__file__)} develop          # scaffold from arch doc")
+    if info["file_count"] > 0:
+        print(f"    python {os.path.basename(__file__)} test             # generate tests")
+        print(f"    python {os.path.basename(__file__)} review           # code review")
+
+
+def cmd_develop(args, engine, info, rules):
+    """Scaffold code from architecture doc."""
+    from develop import Developer
+    dev = Developer(engine, info, rules)
+    dev.run(apply=args.apply, layer_filter=args.layer, plan_only=args.plan_only)
+
+
+def cmd_test(args, engine, info, rules):
+    """Generate test suites."""
+    from testgen import TestGenerator
+    gen = TestGenerator(engine, info, rules)
+    gen.run(apply=args.apply, layer_filter=args.layer,
+            file_filter=args.file, integration=args.integration)
+
+
+def cmd_review(args, engine, info, rules):
+    """Run code review."""
+    from review import Reviewer
+    reviewer = Reviewer(engine, info, rules)
+    reviewer.run(layer_filter=args.layer, file_filter=args.file,
+                 skip_consolidation=args.skip_consolidation)
+
+
+def cmd_fix(args, engine, info, rules):
+    """Apply review fixes."""
+    # Delegate to fix.py with forwarded args
+    cmd = [sys.executable, os.path.join(SCRIPT_DIR, "fix.py")]
+    if args.apply: cmd.append("--apply")
+    if args.layer: cmd.extend(["--layer", args.layer])
+    if args.file: cmd.extend(["--file", args.file])
+    cmd.extend(["--ollama-url", args.url])
+    cmd.append(info["root"])
+    subprocess.run(cmd)
+
+
+def cmd_all(args, engine, info, rules):
+    """Full pipeline: develop → test → review → fix."""
+    start = time.time()
+    phases = []
+
+    # Phase 1: Develop (if arch doc exists and project is new-ish)
+    if info.get("arch_doc"):
+        log("═" * 60)
+        log("  PHASE 1 — Develop from Architecture Doc")
+        log("═" * 60)
+        from develop import Developer
+        dev = Developer(engine, info, rules)
+        dev.run(apply=args.apply, layer_filter=args.layer)
+        phases.append("develop")
+
+        # Re-detect after scaffolding (new files exist now)
+        if args.apply:
+            info = detect(info["root"])
+
+    # Phase 2: Generate tests
+    log("\n" + "═" * 60)
+    log("  PHASE 2 — Generate Test Suites")
+    log("═" * 60)
+    from testgen import TestGenerator
+    gen = TestGenerator(engine, info, rules)
+    gen.run(apply=args.apply, layer_filter=args.layer)
+    phases.append("test")
+
+    # Phase 3: Run existing tests
+    if not args.skip_tests:
+        log("\n" + "═" * 60)
+        log("  PHASE 3 — Run Tests (baseline)")
+        log("═" * 60)
+        tf = info["stack"].get("test_framework", "pytest")
+        td = info.get("has_tests") or "tests"
+        if tf == "pytest":
+            cmd = [sys.executable, "-m", "pytest", td, "-m", "not integration",
+                   "--tb=short", "-q", "--no-header"]
+        else:
+            cmd = ["npx", tf, "--passWithNoTests"]
+        result = subprocess.run(cmd, cwd=info["root"], capture_output=True, text=True)
+        print(result.stdout[-500:] if result.stdout else "(no output)")
+        phases.append("baseline_tests")
+
+    # Phase 4: Code review
+    log("\n" + "═" * 60)
+    log("  PHASE 4 — Code Review")
+    log("═" * 60)
+    from review import Reviewer
+    reviewer = Reviewer(engine, info, rules)
+    reviewer.run(layer_filter=args.layer)
+    phases.append("review")
+
+    # Phase 5: Apply fixes
+    if args.apply:
+        log("\n" + "═" * 60)
+        log("  PHASE 5 — Apply Fixes")
+        log("═" * 60)
+        fix_cmd = [sys.executable, os.path.join(SCRIPT_DIR, "fix.py"),
+                   "--apply", "--ollama-url", args.url, info["root"]]
+        if args.layer: fix_cmd.extend(["--layer", args.layer])
+        subprocess.run(fix_cmd)
+        phases.append("fix")
+
+        # Phase 6: Post-fix tests
+        if not args.skip_tests:
+            log("\n" + "═" * 60)
+            log("  PHASE 6 — Post-Fix Tests")
+            log("═" * 60)
+            if tf == "pytest":
+                cmd = [sys.executable, "-m", "pytest", td, "-m", "not integration",
+                       "--tb=short", "-q", "--no-header"]
+            else:
+                cmd = ["npx", tf, "--passWithNoTests"]
+            result = subprocess.run(cmd, cwd=info["root"], capture_output=True, text=True)
+            print(result.stdout[-500:] if result.stdout else "(no output)")
+            phases.append("post_fix_tests")
+
+    elapsed = time.time() - start
+    log(f"\n{'═'*60}")
+    log(f"  COMPLETE — {', '.join(phases)} — {fmt_time(elapsed)}")
+    log(f"{'═'*60}")
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+def main():
+    parser = argparse.ArgumentParser(
+        description="Drop-in project scaffolder, test generator, reviewer, and fixer",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__,
+    )
+
+    # Global options
+    parser.add_argument("--url", type=str, default="http://192.168.50.46:11434",
+                        help="Ollama URL (default: http://192.168.50.46:11434)")
+    parser.add_argument("--reason-model", type=str, help="Pin reasoning model")
+    parser.add_argument("--code-model", type=str, help="Pin code model")
+    parser.add_argument("--quick-model", type=str, help="Pin quick model")
+    parser.add_argument("--project", type=str, default=".", help="Project root directory")
+    parser.add_argument("--layer", type=str, help="Target specific layers (comma-separated)")
+    parser.add_argument("--file", type=str, help="Target a specific file")
+    parser.add_argument("--apply", action="store_true", help="Write files (default: dry-run)")
+    parser.add_argument("--no-llm-rules", action="store_true",
+                        help="Skip LLM-based rule generation (pattern rules only)")
+
+    # Subcommand-specific flags
+    parser.add_argument("--plan-only", action="store_true", help="[develop] Just show plan")
+    parser.add_argument("--integration", action="store_true", help="[test] Include integration tests")
+    parser.add_argument("--skip-consolidation", action="store_true", help="[review] Skip pass 2")
+    parser.add_argument("--skip-tests", action="store_true", help="[all] Skip test run phases")
+
+    parser.add_argument("command", nargs="?", default="detect",
+                        choices=["detect", "develop", "test", "review", "fix", "all"],
+                        help="What to do (default: detect)")
+
+    args = parser.parse_args()
+
+    # ── Setup engine ──
+    models = {}
+    if args.reason_model: models["reason"] = args.reason_model
+    if args.code_model: models["code"] = args.code_model
+    if args.quick_model: models["quick"] = args.quick_model
+
+    engine = Engine(url=args.url, models=models)
+
+    log("═" * 60)
+    log("  DROP — Project Scaffolder & Dev Toolkit")
+    log("═" * 60)
+
+    ok, available, msg = engine.test()
+    print(f"\n  Ollama: {msg}")
+    if not ok:
+        print(f"\n  Cannot reach Ollama at {args.url}")
+        print(f"  Make sure it's running: ollama serve")
+        sys.exit(1)
+    engine.print_model_map()
+
+    # ── Detect project ──
+    project_root = os.path.abspath(args.project)
+    info = detect(project_root)
+
+    # ── Build rules ──
+    rules_path = os.path.join(info["root"], "docs", ".layer_rules.json")
+    if os.path.isfile(rules_path) and args.command != "develop":
+        log(f"  Loading saved rules from docs/.layer_rules.json")
+        rules = load_rules(rules_path)
+    else:
+        use_llm = not args.no_llm_rules and bool(info.get("arch_doc"))
+        rules, _ = build_all_rules(engine, info, use_llm=use_llm)
+        os.makedirs(os.path.dirname(rules_path), exist_ok=True)
+        save_rules(rules, rules_path)
+        log(f"  Rules saved to docs/.layer_rules.json")
+
+    # ── Dispatch ──
+    commands = {
+        "detect": cmd_detect,
+        "develop": cmd_develop,
+        "test": cmd_test,
+        "review": cmd_review,
+        "fix": cmd_fix,
+        "all": cmd_all,
+    }
+
+    handler = commands.get(args.command, cmd_detect)
+    handler(args, engine, info, rules)
+
+
+if __name__ == "__main__":
+    main()
