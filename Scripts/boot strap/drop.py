@@ -42,7 +42,7 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
-from engine import Engine, fmt_time, log
+from engine import Engine, fmt_time, log, timed_input
 from detect import detect, print_detection
 from rules import build_all_rules, save_rules, load_rules
 
@@ -71,6 +71,29 @@ def cmd_develop(args, engine, info, rules):
     dev = Developer(engine, info, rules)
     dev.run(apply=args.apply, layer_filter=args.layer, plan_only=args.plan_only)
 
+    applied = args.apply
+    if not args.apply and not args.plan_only and dev.generated:
+        answer = timed_input("\n  Apply source files? [y/N]:", args.timeout)
+        if answer == "y":
+            log("  Applying...")
+            dev._write_files()
+            applied = True
+
+    if applied and not args.plan_only:
+        from detect import detect as _redetect
+        from testgen import TestGenerator
+        log("\n  Generating tests for scaffolded files...")
+        fresh_info = _redetect(info["root"])
+        tgen = TestGenerator(engine, fresh_info, rules)
+        tgen.run(apply=False, layer_filter=args.layer)
+        if tgen.generated:
+            try:
+                answer = input("\n  Apply tests? [y/N]: ").strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                answer = ""
+            if answer == "y":
+                tgen._write()
+
 
 def cmd_test(args, engine, info, rules):
     """Generate test suites."""
@@ -79,6 +102,11 @@ def cmd_test(args, engine, info, rules):
     gen.run(apply=args.apply, layer_filter=args.layer,
             file_filter=args.file, integration=args.integration)
 
+    if not args.apply and gen.generated:
+        answer = timed_input("\n  Apply tests? [y/N]:", args.timeout)
+        if answer == "y":
+            gen._write()
+
 
 def cmd_review(args, engine, info, rules):
     """Run code review."""
@@ -86,6 +114,10 @@ def cmd_review(args, engine, info, rules):
     reviewer = Reviewer(engine, info, rules)
     reviewer.run(layer_filter=args.layer, file_filter=args.file,
                  skip_consolidation=args.skip_consolidation)
+
+    answer = timed_input("\n  Run fix now? [y/N]:", args.timeout)
+    if answer == "y":
+        cmd_fix(args, engine, info, rules)
 
 
 def cmd_fix(args, engine, info, rules):
@@ -96,6 +128,8 @@ def cmd_fix(args, engine, info, rules):
     if args.layer: cmd.extend(["--layer", args.layer])
     if args.file: cmd.extend(["--file", args.file])
     cmd.extend(["--ollama-url", args.url])
+    if args.timeout > 0:
+        cmd.extend(["--timeout", str(args.timeout)])
     cmd.append(info["root"])
     subprocess.run(cmd)
 
@@ -107,9 +141,9 @@ def cmd_all(args, engine, info, rules):
 
     # Phase 1: Develop (if arch doc exists and project is new-ish)
     if info.get("arch_doc"):
-        log("═" * 60)
+        log("=" * 60)
         log("  PHASE 1 — Develop from Architecture Doc")
-        log("═" * 60)
+        log("=" * 60)
         from develop import Developer
         dev = Developer(engine, info, rules)
         dev.run(apply=args.apply, layer_filter=args.layer)
@@ -120,9 +154,9 @@ def cmd_all(args, engine, info, rules):
             info = detect(info["root"])
 
     # Phase 2: Generate tests
-    log("\n" + "═" * 60)
+    log("\n" + "=" * 60)
     log("  PHASE 2 — Generate Test Suites")
-    log("═" * 60)
+    log("=" * 60)
     from testgen import TestGenerator
     gen = TestGenerator(engine, info, rules)
     gen.run(apply=args.apply, layer_filter=args.layer)
@@ -130,9 +164,9 @@ def cmd_all(args, engine, info, rules):
 
     # Phase 3: Run existing tests
     if not args.skip_tests:
-        log("\n" + "═" * 60)
+        log("\n" + "=" * 60)
         log("  PHASE 3 — Run Tests (baseline)")
-        log("═" * 60)
+        log("=" * 60)
         tf = info["stack"].get("test_framework", "pytest")
         td = info.get("has_tests") or "tests"
         if tf == "pytest":
@@ -145,9 +179,9 @@ def cmd_all(args, engine, info, rules):
         phases.append("baseline_tests")
 
     # Phase 4: Code review
-    log("\n" + "═" * 60)
+    log("\n" + "=" * 60)
     log("  PHASE 4 — Code Review")
-    log("═" * 60)
+    log("=" * 60)
     from review import Reviewer
     reviewer = Reviewer(engine, info, rules)
     reviewer.run(layer_filter=args.layer)
@@ -155,9 +189,9 @@ def cmd_all(args, engine, info, rules):
 
     # Phase 5: Apply fixes
     if args.apply:
-        log("\n" + "═" * 60)
+        log("\n" + "=" * 60)
         log("  PHASE 5 — Apply Fixes")
-        log("═" * 60)
+        log("=" * 60)
         fix_cmd = [sys.executable, os.path.join(SCRIPT_DIR, "fix.py"),
                    "--apply", "--ollama-url", args.url, info["root"]]
         if args.layer: fix_cmd.extend(["--layer", args.layer])
@@ -166,9 +200,9 @@ def cmd_all(args, engine, info, rules):
 
         # Phase 6: Post-fix tests
         if not args.skip_tests:
-            log("\n" + "═" * 60)
+            log("\n" + "=" * 60)
             log("  PHASE 6 — Post-Fix Tests")
-            log("═" * 60)
+            log("=" * 60)
             if tf == "pytest":
                 cmd = [sys.executable, "-m", "pytest", td, "-m", "not integration",
                        "--tb=short", "-q", "--no-header"]
@@ -179,9 +213,91 @@ def cmd_all(args, engine, info, rules):
             phases.append("post_fix_tests")
 
     elapsed = time.time() - start
-    log(f"\n{'═'*60}")
+    log(f"\n{'='*60}")
     log(f"  COMPLETE — {', '.join(phases)} — {fmt_time(elapsed)}")
-    log(f"{'═'*60}")
+    log(f"{'='*60}")
+
+
+def cmd_full(args, engine, info, rules):
+    """Interactive pipeline: rules -> develop -> review -> fix -> test."""
+    from detect import detect as _redetect
+    from develop import Developer
+    from review import Reviewer
+    from testgen import TestGenerator
+    from rules import build_all_rules, save_rules
+
+    start = time.time()
+
+    # Phase 1: Regenerate rules from arch doc
+    log("=" * 60)
+    log("  PHASE 1 — Regenerate Rules")
+    log("=" * 60)
+    rules, _ = build_all_rules(engine, info, use_llm=True)
+    rules_path = os.path.join(info["root"], "docs", ".layer_rules.json")
+    save_rules(rules, rules_path)
+    log(f"  Rules saved.")
+
+    # Phase 2: Develop
+    log("\n" + "=" * 60)
+    log("  PHASE 2 — Develop from Architecture Doc")
+    log("=" * 60)
+    dev = Developer(engine, info, rules)
+    dev.run(apply=False, layer_filter=args.layer, plan_only=args.plan_only)
+
+    dev_applied = False
+    if not args.plan_only and dev.generated:
+        answer = timed_input("\n  Apply source files? [y/N]:", args.timeout)
+        if answer == "y":
+            dev._write_files()
+            dev_applied = True
+
+    if not dev_applied and not args.plan_only:
+        log("  Skipped develop — stopping pipeline.")
+        return
+
+    fresh_info = _redetect(info["root"])
+
+    # Phase 3: Generate tests
+    log("\n" + "=" * 60)
+    log("  PHASE 3 — Generate Tests")
+    log("=" * 60)
+    tgen = TestGenerator(engine, fresh_info, rules)
+    tgen.run(apply=False, layer_filter=args.layer, integration=args.integration)
+    if tgen.generated:
+        answer = timed_input("\n  Apply tests? [y/N]:", args.timeout)
+        if answer == "y":
+            tgen._write()
+
+    # Phase 4: Code review
+    log("\n" + "=" * 60)
+    log("  PHASE 4 — Code Review")
+    log("=" * 60)
+    fresh_info = _redetect(info["root"])
+    reviewer = Reviewer(engine, fresh_info, rules)
+    reviewer.run(layer_filter=args.layer, skip_consolidation=args.skip_consolidation)
+
+    # Phase 5: Fix
+    log("\n" + "=" * 60)
+    log("  PHASE 5 — Apply Fixes")
+    log("=" * 60)
+    cmd_fix(args, engine, fresh_info, rules)
+
+    # Phase 6: Run tests
+    log("\n" + "=" * 60)
+    log("  PHASE 6 — Run Tests")
+    log("=" * 60)
+    fresh_info = _redetect(info["root"])
+    td = fresh_info.get("has_tests") or "tests"
+    result = subprocess.run(
+        [sys.executable, "-m", "pytest", td, "-m", "not integration",
+         "--tb=short", "-q", "--no-header"],
+        cwd=info["root"], capture_output=True, text=True,
+    )
+    print(result.stdout[-1000:] if result.stdout else "(no test output)")
+
+    log(f"\n{'='*60}")
+    log(f"  COMPLETE — {fmt_time(time.time() - start)}")
+    log(f"{'='*60}")
 
 
 # ---------------------------------------------------------------------------
@@ -206,6 +322,8 @@ def main():
     parser.add_argument("--apply", action="store_true", help="Write files (default: dry-run)")
     parser.add_argument("--no-llm-rules", action="store_true",
                         help="Skip LLM-based rule generation (pattern rules only)")
+    parser.add_argument("--timeout", type=int, default=0,
+                        help="Seconds to wait at each prompt before auto-proceeding with 'y' (0 = wait forever)")
 
     # Subcommand-specific flags
     parser.add_argument("--plan-only", action="store_true", help="[develop] Just show plan")
@@ -214,7 +332,7 @@ def main():
     parser.add_argument("--skip-tests", action="store_true", help="[all] Skip test run phases")
 
     parser.add_argument("command", nargs="?", default="detect",
-                        choices=["detect", "develop", "test", "review", "fix", "all"],
+                        choices=["detect", "develop", "test", "review", "fix", "all", "full"],
                         help="What to do (default: detect)")
 
     args = parser.parse_args()
@@ -227,9 +345,9 @@ def main():
 
     engine = Engine(url=args.url, models=models)
 
-    log("═" * 60)
+    log("=" * 60)
     log("  DROP — Project Scaffolder & Dev Toolkit")
-    log("═" * 60)
+    log("=" * 60)
 
     ok, available, msg = engine.test()
     print(f"\n  Ollama: {msg}")
@@ -263,6 +381,7 @@ def main():
         "review": cmd_review,
         "fix": cmd_fix,
         "all": cmd_all,
+        "full": cmd_full,
     }
 
     handler = commands.get(args.command, cmd_detect)

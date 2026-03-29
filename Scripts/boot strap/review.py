@@ -94,10 +94,7 @@ def ground_findings(text, source):
         i += 2
 
         quotes = quote_re.findall(full)
-        if not quotes:
-            output.append(full)
-            kept += 1
-        elif any(q.strip() in source for q in quotes):
+        if any(q.strip() in source for q in quotes):
             output.append(full)
             kept += 1
         else:
@@ -156,9 +153,9 @@ class Reviewer:
                 if layer_key != current_layer:
                     current_layer = layer_key
                     layer_content.setdefault(layer_key, [])
-                    print(f"\n  {'─'*55}")
+                    print(f"\n  {'-'*55}")
                     print(f"  {self.info['layers'].get(layer_key, {}).get('name', layer_key)}")
-                    print(f"  {'─'*55}")
+                    print(f"  {'-'*55}")
 
                 print(f"    [{i}/{len(all_files)}] {rel}...", end=" ", flush=True)
                 stats["total"] += 1

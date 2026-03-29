@@ -182,6 +182,15 @@ def _detect_layers(root):
         if item in ("tests", "test", "__tests__", "spec"):
             continue
 
+        # Skip bootstrap tooling dirs — any dir (or subdir) containing drop.py
+        has_drop = os.path.isfile(os.path.join(full, "drop.py")) or any(
+            os.path.isfile(os.path.join(full, s, "drop.py"))
+            for s in os.listdir(full)
+            if os.path.isdir(os.path.join(full, s))
+        )
+        if has_drop:
+            continue
+
         # Check if this is a container dir (backend/, frontend/) or a leaf layer
         subdirs = [s for s in os.listdir(full)
                     if os.path.isdir(os.path.join(full, s))
@@ -344,5 +353,5 @@ def print_detection(info):
 
     print(f"\n  Layers:")
     for key, layer in info["layers"].items():
-        patterns = ", ".join(layer["patterns"]) if layer["patterns"] else "—"
+        patterns = ", ".join(layer["patterns"]) if layer["patterns"] else "-"
         print(f"    {key:<30} {layer['file_count']:>3} files  [{patterns}]")

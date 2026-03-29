@@ -1,0 +1,29 @@
+# Analysis
+pandas
+numpy
+scipy
+
+# Schemas & config
+pydantic
+python-dotenv
+
+# Data ingestion
+garmindb
+garth
+
+# Time-series storage
+influxdb-client
+
+# Vector storage & RAG
+chromadb
+sentence-transformers
+
+# Weather data
+openmeteo-requests
+
+# Inference (Ollama via HTTP — no extra SDK needed)
+requests
+
+# Development
+jupyterlab
+pytest

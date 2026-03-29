@@ -248,9 +248,9 @@ class Developer:
             if not files:
                 continue
 
-            print(f"\n  {'─'*55}")
-            print(f"  {layer_name} ({len(files)} files) → model: {self.engine.model_for('code')}")
-            print(f"  {'─'*55}")
+            print(f"\n  {'-'*55}")
+            print(f"  {layer_name} ({len(files)} files) -> model: {self.engine.model_for('code')}")
+            print(f"  {'-'*55}")
 
             for fspec in files:
                 counter += 1
@@ -370,11 +370,21 @@ class Developer:
 
     def _preview(self):
         root = self.info["root"]
+        preview_dir = os.path.join(root, "tmp", "preview")
+        os.makedirs(preview_dir, exist_ok=True)
+
         log(f"\n  Files that would be created ({len(self.generated)}):\n")
         for path, content in sorted(self.generated.items()):
             lines = content.count("\n") + 1
             exists = " (EXISTS)" if os.path.isfile(os.path.join(root, path)) else ""
             print(f"    {path:<55} {lines:>4} lines{exists}")
+
+            preview_path = os.path.join(preview_dir, path.replace("/", os.sep))
+            os.makedirs(os.path.dirname(preview_path), exist_ok=True)
+            with open(preview_path, "w", encoding="utf-8") as f:
+                f.write(content)
+
+        log(f"\n  Preview written to tmp/preview/ — inspect in IDE before applying.")
 
 
 # ---------------------------------------------------------------------------

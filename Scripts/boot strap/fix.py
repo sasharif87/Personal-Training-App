@@ -17,7 +17,7 @@ import time
 from collections import OrderedDict
 from datetime import datetime
 
-from engine import Engine, strip_fences, read_file, fmt_time, log
+from engine import Engine, strip_fences, read_file, fmt_time, log, timed_input
 
 FIX_PROMPT = """You are a senior engineer applying code review fixes.
 
@@ -56,6 +56,8 @@ def main():
     parser.add_argument("--layer", type=str)
     parser.add_argument("--file", type=str)
     parser.add_argument("--report", type=str)
+    parser.add_argument("--timeout", type=int, default=0,
+                        help="Seconds to wait at prompt before auto-proceeding with 'y'")
     parser.add_argument("--ollama-url", type=str, default="http://192.168.50.46:11434")
     parser.add_argument("--code-model", type=str)
     parser.add_argument("project_dir", nargs="?", default=".")
@@ -102,6 +104,7 @@ def main():
     patch_path = os.path.join(patch_dir, f"fixes_{ts}.patch")
 
     stats = {"fixed": 0, "no_change": 0, "skipped": 0, "errors": 0}
+    pending = {}  # rel → fixed content, for apply-after-preview
 
     with open(patch_path, "w", encoding="utf-8") as pf:
         pf.write(f"# Fix patches — {datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n")
@@ -155,6 +158,12 @@ def main():
                     f.write(fixed)
                 print(f"FIXED ({len(diff)} diff lines)")
             else:
+                preview_path = os.path.join(root, "tmp", "preview", "fixes",
+                                            rel.replace("/", os.sep))
+                os.makedirs(os.path.dirname(preview_path), exist_ok=True)
+                with open(preview_path, "w", encoding="utf-8") as pf2:
+                    pf2.write(fixed)
+                pending[rel] = fixed
                 print(f"PENDING ({len(diff)} diff lines)")
 
     if stats["fixed"] == 0 and os.path.isfile(patch_path):
@@ -162,7 +171,18 @@ def main():
 
     log(f"\n  Fixed: {stats['fixed']} | No change: {stats['no_change']} | "
         f"Skipped: {stats['skipped']} | Errors: {stats['errors']}")
-    if not args.apply and stats["fixed"]:
+
+    if pending:
+        log(f"  Preview written to tmp/preview/fixes/ — inspect in IDE before applying.")
+        answer = timed_input("  Apply now? [y/N]:", args.timeout)
+        if answer == "y":
+            for rel, content in pending.items():
+                with open(os.path.join(root, rel), "w", encoding="utf-8") as f:
+                    f.write(content)
+            log(f"  Applied {len(pending)} fixes.")
+        else:
+            log(f"  Skipped — re-run with --apply to write.")
+    elif not args.apply and stats["fixed"]:
         log(f"  Review patches in {patch_dir}/, then --apply")
 
 

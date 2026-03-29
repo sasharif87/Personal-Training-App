@@ -263,10 +263,20 @@ class TestGenerator:
 
     def _preview(self):
         root = self.info["root"]
+        preview_dir = os.path.join(root, "tmp", "preview")
+        os.makedirs(preview_dir, exist_ok=True)
+
         log(f"\n  Would create {len(self.generated)} test files:\n")
         for path, content in sorted(self.generated.items()):
             exists = " (EXISTS)" if os.path.isfile(os.path.join(root, path)) else ""
             print(f"    {path:<55} {content.count(chr(10))+1:>4} lines{exists}")
+
+            preview_path = os.path.join(preview_dir, path.replace("/", os.sep))
+            os.makedirs(os.path.dirname(preview_path), exist_ok=True)
+            with open(preview_path, "w", encoding="utf-8") as f:
+                f.write(content)
+
+        log(f"\n  Preview written to tmp/preview/ — inspect in IDE before applying.")
 
 
 def main():

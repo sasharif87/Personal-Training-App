@@ -13,6 +13,8 @@ or you can pin models explicitly.
 import json
 import os
 import re
+import sys
+import threading
 import time
 import urllib.request
 from datetime import datetime
@@ -81,7 +83,7 @@ class Engine:
                 models = [m["name"] for m in data.get("models", [])]
                 self._available = models
                 self._resolve_models()
-                return True, models, f"Connected — {len(models)} model(s)"
+                return True, models, f"Connected - {len(models)} model(s)"
         except Exception as e:
             return False, [], f"Cannot reach {self.url}: {e}"
 
@@ -129,7 +131,7 @@ class Engine:
         for role in ("reason", "code", "quick"):
             model = self._resolved.get(role, "?")
             pinned = " (pinned)" if role in self.pinned else " (auto)"
-            print(f"    {role:<8} → {model}{pinned}")
+            print(f"    {role:<8} -> {model}{pinned}")
         print()
 
     # ── Generation ──
@@ -233,3 +235,29 @@ def ts():
 
 def log(msg):
     print(f"[{ts()}] {msg}")
+
+
+def timed_input(prompt, timeout=0, default="y"):
+    """Prompt for input. If timeout > 0 and no response arrives, returns default."""
+    if timeout <= 0:
+        try:
+            return input(prompt).strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            return ""
+
+    print(prompt, end=" ", flush=True)
+    result = [None]
+
+    def _read():
+        try:
+            result[0] = sys.stdin.readline().strip().lower()
+        except Exception:
+            result[0] = default
+
+    t = threading.Thread(target=_read, daemon=True)
+    t.start()
+    t.join(timeout)
+    if result[0] is None:
+        print(f"(no response after {timeout}s — defaulting '{default}')")
+        result[0] = default
+    return result[0]
