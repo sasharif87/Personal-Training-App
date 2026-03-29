@@ -88,6 +88,9 @@ Return ONLY the code.
 """
 
 
+# ---------------------------------------------------------------------------
+# TestGenerator
+# ---------------------------------------------------------------------------
 class TestGenerator:
     def __init__(self, engine, project_info, rules):
         self.engine = engine
@@ -279,6 +282,9 @@ class TestGenerator:
         log(f"\n  Preview written to tmp/preview/ — inspect in IDE before applying.")
 
 
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
 def main():
     parser = argparse.ArgumentParser(description="Generate test suites via Ollama")
     parser.add_argument("--apply", action="store_true")

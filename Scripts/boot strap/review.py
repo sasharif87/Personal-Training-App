@@ -12,7 +12,6 @@ Usage:
 """
 
 import argparse
-import json
 import os
 import re
 import sys
@@ -20,7 +19,7 @@ import time
 from collections import OrderedDict
 from datetime import datetime
 
-from engine import Engine, strip_fences, read_file, fmt_time, log
+from engine import Engine, read_file, fmt_time, log
 from detect import detect, print_detection
 from rules import build_all_rules, load_rules, save_rules
 

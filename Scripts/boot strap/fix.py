@@ -11,19 +11,34 @@ import argparse
 import difflib
 import json
 import os
+import py_compile
 import re
 import sys
+import tempfile
 import time
 from collections import OrderedDict
 from datetime import datetime
 
 from engine import Engine, strip_fences, read_file, fmt_time, log, timed_input
 
+# ---------------------------------------------------------------------------
+# Fix prompt
+# ---------------------------------------------------------------------------
 FIX_PROMPT = """You are a senior engineer applying code review fixes.
 
 Return the COMPLETE corrected file — no explanations, no fences, no commentary.
 Only change what's needed. Preserve structure, imports, indentation. Skip issues
 that need more context or changes to other files.
+
+PRESERVATION RULES — these are not optional:
+1. Do NOT remove or shorten module-level docstrings (the triple-quoted block at the top).
+2. Do NOT remove section separator comments (lines like # ---...--- or # ===...===).
+3. Do NOT remove inline comments or function/class docstrings. Only touch a comment
+   if a finding explicitly names it as the problem.
+4. Do NOT add @retry or retry logic to database session calls (session.execute,
+   session.flush, session.commit) — they manage their own connection pool and
+   retrying mid-transaction causes duplicate writes.
+5. Preserve the exact indentation style (spaces/tabs) of the original file.
 
 ISSUES:
 {issues}
@@ -33,6 +48,9 @@ ORIGINAL FILE ({filepath}):
 """
 
 
+# ---------------------------------------------------------------------------
+# Report parser
+# ---------------------------------------------------------------------------
 def parse_report(path):
     """Parse review report → list of (rel_path, issues_text)."""
     with open(path, "r", encoding="utf-8") as f:
@@ -50,6 +68,34 @@ def parse_report(path):
     return entries
 
 
+# ---------------------------------------------------------------------------
+# Validation helpers — run before applying any fix to catch automation damage
+# ---------------------------------------------------------------------------
+def _count_comment_lines(text):
+    """Count lines that are comments or contain docstring delimiters."""
+    return sum(1 for ln in text.splitlines()
+               if ln.strip().startswith("#") or '"""' in ln or "'''" in ln)
+
+
+def _syntax_check_py(content):
+    """Compile-check Python content. Returns (ok, error_str)."""
+    with tempfile.NamedTemporaryFile(suffix=".py", delete=False,
+                                    mode="w", encoding="utf-8") as tmp:
+        tmp.write(content)
+        tmp_path = tmp.name
+    try:
+        py_compile.compile(tmp_path, doraise=True)
+        return True, None
+    except py_compile.PyCompileError as e:
+        return False, str(e)
+    finally:
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
 def main():
     parser = argparse.ArgumentParser(description="Apply review fixes via Ollama")
     parser.add_argument("--apply", action="store_true")
@@ -137,6 +183,22 @@ def main():
             if ratio < 0.5 or ratio > 2.0:
                 stats["skipped"] += 1
                 print(f"SIZE_MISMATCH ({ratio:.2f})")
+                continue
+
+            # Syntax check Python files before accepting the fix
+            if rel.endswith(".py"):
+                ok, err_msg = _syntax_check_py(fixed)
+                if not ok:
+                    stats["errors"] += 1
+                    print(f"SYNTAX_ERROR ({err_msg[:80]})")
+                    continue
+
+            # Comment/docstring preservation check — catch aggressive stripping
+            orig_comments = _count_comment_lines(original)
+            fixed_comments = _count_comment_lines(fixed)
+            if orig_comments > 0 and fixed_comments / orig_comments < 0.75:
+                stats["errors"] += 1
+                print(f"COMMENT_STRIP ({fixed_comments}/{orig_comments} comment lines kept)")
                 continue
 
             diff = list(difflib.unified_diff(

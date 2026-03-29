@@ -1,6 +1,18 @@
+# backend/analysis/fitness_models.py
+"""
+Fitness metric calculations.
+
+Implements the core performance modelling functions:
+  calculate_ctl_atl_tsb — Banister impulse-response model (fitness/fatigue/form)
+  extract_css           — Critical Swim Speed from 200m/400m TT times
+  pace_to_css_fraction  — Normalise a swim pace to CSS fraction for TSS
+"""
 import pandas as pd
 import numpy as np
 
+# ---------------------------------------------------------------------------
+# CTL / ATL / TSB  (Banister impulse-response model)
+# ---------------------------------------------------------------------------
 def calculate_ctl_atl_tsb(daily_tss_series: pd.Series):
     """
     Standard Banister CTL/ATL model.
@@ -13,6 +25,9 @@ def calculate_ctl_atl_tsb(daily_tss_series: pd.Series):
     tsb = ctl - atl
     return ctl, atl, tsb
 
+# ---------------------------------------------------------------------------
+# Swim metrics
+# ---------------------------------------------------------------------------
 def extract_css(swim_400m_time_sec: float, swim_200m_time_sec: float):
     """
     CSS = (400-200) / (T400-T200)

@@ -1,7 +1,20 @@
+# backend/rag/vector_db.py
+"""
+ChromaDB vector store for training history retrieval.
+
+Stores historical training blocks as dense embeddings so the LLM context
+can be augmented with semantically similar past training periods.
+
+Encoder: all-MiniLM-L6-v2 (fast, good enough for training block similarity)
+Collection: training_history (persistent across sessions)
+"""
 import chromadb
 from sentence_transformers import SentenceTransformer
 from typing import List, Dict, Any
 
+# ---------------------------------------------------------------------------
+# VectorDB
+# ---------------------------------------------------------------------------
 class VectorDB:
     def __init__(self, persist_directory="./chroma_db"):
         self.chroma_client = chromadb.PersistentClient(path=persist_directory)
@@ -25,6 +38,9 @@ class VectorDB:
         )
         return results
         
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
 if __name__ == "__main__":
     db = VectorDB()
     print("Vector storage initialized.")

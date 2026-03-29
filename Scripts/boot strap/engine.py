@@ -22,6 +22,9 @@ from datetime import datetime
 # ---------------------------------------------------------------------------
 # Model role defaults — ordered by preference (first available wins)
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Model role defaults — ordered by preference (first available wins)
+# ---------------------------------------------------------------------------
 MODEL_PREFERENCES = {
     "reason": [
         "deepseek-r1:32b", "deepseek-r1:14b", "deepseek-r1:8b",
@@ -42,7 +45,7 @@ MODEL_PREFERENCES = {
     ],
 }
 
-# Context windows per role
+# Context windows and temperature defaults per role
 CTX_DEFAULTS = {
     "reason": 16384,
     "code": 32768,
@@ -56,8 +59,10 @@ TEMP_DEFAULTS = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Engine — Ollama client with automatic model selection per task role
+# ---------------------------------------------------------------------------
 class Engine:
-    """Ollama client with automatic model selection per task role."""
 
     def __init__(self, url="http://localhost:11434", models=None):
         """
@@ -72,7 +77,7 @@ class Engine:
         self._available = None  # lazy-loaded
         self._resolved = {}     # role → resolved model name
 
-    # ── Connection & model discovery ──
+    # ── Connection & model discovery ─────────────────────────────────────────
 
     def test(self):
         """Test connection, return (ok, available_models, message)."""
@@ -134,7 +139,7 @@ class Engine:
             print(f"    {role:<8} -> {model}{pinned}")
         print()
 
-    # ── Generation ──
+    # ── Generation ───────────────────────────────────────────────────────────
 
     def generate(self, prompt, *, role="code", temperature=None, num_ctx=None,
                  timeout=1800):

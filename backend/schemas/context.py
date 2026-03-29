@@ -1,6 +1,18 @@
+# backend/schemas/context.py
+"""
+Pydantic schemas for the coaching context passed to the LLM.
+
+AthleteState    — current fitness/fatigue metrics (FTP, CTL, ATL, TSB, HRV)
+RaceEvent       — upcoming target race with date, format, priority
+TrainingBlock   — current phase, week position, weeks to race
+ContextAssembler — full assembled context: athlete + block + recent data + RAG results
+"""
 from typing import List, Optional, Dict, Any
 from pydantic import BaseModel, Field
 
+# ---------------------------------------------------------------------------
+# Athlete state
+# ---------------------------------------------------------------------------
 class AthleteState(BaseModel):
     ftp: int = Field(..., description="Functional Threshold Power (Watts)")
     css: str = Field(..., description="Critical Swim Speed (Pace per 100m)")
@@ -10,6 +22,9 @@ class AthleteState(BaseModel):
     tsb: float = Field(..., description="Training Stress Balance (Form)")
     hrv_trend: str = Field(..., description="Historical HRV trend: normal, suppressed, elevated")
 
+# ---------------------------------------------------------------------------
+# Race event and training block
+# ---------------------------------------------------------------------------
 class RaceEvent(BaseModel):
     date: str
     format: str = Field(..., description="Olympic, Ironman, 70.3, etc.")
@@ -21,6 +36,9 @@ class TrainingBlock(BaseModel):
     weeks_to_race: int
     target_race: RaceEvent
 
+# ---------------------------------------------------------------------------
+# Context assembler — full payload sent to LLM
+# ---------------------------------------------------------------------------
 class ContextAssembler(BaseModel):
     athlete: AthleteState
     block: TrainingBlock

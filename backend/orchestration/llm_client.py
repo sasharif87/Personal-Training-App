@@ -1,7 +1,18 @@
+# backend/orchestration/llm_client.py
+"""
+Ollama LLM client for workout plan generation.
+
+Wraps the Ollama /api/generate endpoint and formats the coaching prompt.
+Forces JSON output mode so the response can be parsed directly into
+the WeekPlan schema without post-processing.
+"""
 import requests
 import json
 from typing import Dict, Any
 
+# ---------------------------------------------------------------------------
+# OllamaClient
+# ---------------------------------------------------------------------------
 class OllamaClient:
     def __init__(self, base_url="http://localhost:11434", model="llama3:70b-instruct-q4_K_M"):
         self.base_url = base_url

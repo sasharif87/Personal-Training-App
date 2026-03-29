@@ -18,7 +18,6 @@ import json
 import os
 import sys
 import time
-from datetime import datetime
 
 from engine import Engine, extract_json, strip_fences, read_file, fmt_time, log
 from detect import detect, print_detection
@@ -92,6 +91,21 @@ This is project scaffolding with real implementation patterns — not empty stub
 - Proper error handling
 - Configuration from environment variables
 
+STRUCTURE RULES — these are mandatory, not optional:
+1. First line MUST be a path comment: `# {file_path}`
+2. Second block MUST be a module docstring (triple-quoted) that describes:
+   - What this module does in one sentence
+   - The key classes/functions it exposes
+   - Usage example if non-obvious
+3. Before EVERY logical section (imports, constants, each class, each group of related
+   functions, entry point) add a separator block:
+   # ---------------------------------------------------------------------------
+   # Section name
+   # ---------------------------------------------------------------------------
+   Common section names: Imports, Configuration, Models, {key_items}, Helpers, Main
+4. Inside classes, mark method groups with a short inline header:
+   # ── Group name ───────────────────────────────────────────────────────────
+
 Project: {project_name} | Stack: {stack_summary}
 Layer: {layer_name}
 
@@ -111,6 +125,44 @@ API routes (if relevant):
 
 Return ONLY the source code — no markdown fences, no explanations.
 """
+
+
+# ---------------------------------------------------------------------------
+# Post-processing helpers
+# ---------------------------------------------------------------------------
+def _ensure_section_headers(code: str, file_path: str) -> str:
+    """
+    Guarantee the two structural markers every generated file must have:
+      1. `# path/to/file.py` as the very first line
+      2. A module-level docstring immediately after
+
+    Section separator comments inside the body are left to the LLM — the
+    prompt instructs it to add them.  This function only enforces the two
+    headers that are trivially checkable without parsing the AST.
+    """
+    lines = code.splitlines()
+    if not lines:
+        return code
+
+    # ── 1. Path comment ──────────────────────────────────────────────────────
+    path_comment = f"# {file_path}"
+    if not lines[0].strip().startswith("#"):
+        # Model omitted it entirely — prepend
+        lines.insert(0, path_comment)
+    elif lines[0].strip() != path_comment:
+        # Model wrote a different comment (e.g. shebang or wrong path) — replace
+        lines[0] = path_comment
+
+    # ── 2. Module docstring ──────────────────────────────────────────────────
+    # Find where imports/code starts (skip the path comment line)
+    has_docstring = any('"""' in l or "'''" in l for l in lines[1:6])
+    if not has_docstring:
+        # Insert a minimal docstring after the path comment
+        module_name = file_path.split("/")[-1].replace(".py", "").replace("_", " ").title()
+        stub = f'"""\n{module_name}.\n\nTODO: add module description.\n"""'
+        lines.insert(1, stub)
+
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -287,6 +339,7 @@ class Developer:
                 try:
                     code = self.engine.generate(prompt, role="code")
                     code = strip_fences(code)
+                    code = _ensure_section_headers(code, fpath)
                     elapsed = time.time() - t0
 
                     if code and len(code.strip()) > 30:

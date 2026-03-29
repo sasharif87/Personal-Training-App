@@ -47,6 +47,9 @@ from detect import detect, print_detection
 from rules import build_all_rules, save_rules, load_rules
 
 
+# ---------------------------------------------------------------------------
+# Command handlers
+# ---------------------------------------------------------------------------
 def cmd_detect(args, engine, info, rules):
     """Just detect and show what we found."""
     print_detection(info)
