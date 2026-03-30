@@ -229,24 +229,32 @@ class Developer:
             log(f"Cannot read {arch_path}: {err}")
             return None
 
+        # If reason and code resolved to the same model, skip the reason role for
+        # arch analysis — using the same large model twice in parallel stalls Ollama.
+        # Fall back to code model with a tighter context budget instead.
+        reason_model = self.engine.model_for("reason")
+        code_model = self.engine.model_for("code")
+        role = "reason" if reason_model != code_model else "code"
+        ctx = 16384 if role == "reason" else 8192
+
         log(f"  Arch doc: {arch_doc_rel} ({len(content):,} chars)")
-        log(f"  Sending to reasoning model ({self.engine.model_for('reason')})...")
+        log(f"  Sending to {role} model ({self.engine.model_for(role)})...")
 
         detected = json.dumps({
             "stack": self.info["stack"],
             "layers": {k: {"prefix": v["prefix"], "patterns": v.get("patterns", []),
-                           "files": v.get("files", [])[:10]}  # sample files
+                           "files": v.get("files", [])[:5]}  # sample files — keep prompt lean
                        for k, v in self.info["layers"].items()},
         }, indent=2)
 
         prompt = ANALYZE_ARCH_PROMPT.format(
-            arch_doc=content,
+            arch_doc=content[:10_000],  # cap arch doc — model doesn't need the full text to plan
             detected_structure=detected,
         )
 
         t0 = time.time()
         try:
-            response = self.engine.generate(prompt, role="reason", num_ctx=16384)
+            response = self.engine.generate(prompt, role=role, num_ctx=ctx, timeout=600)
             plan = extract_json(response)
             log(f"  Plan extracted in {fmt_time(time.time() - t0)}")
             return plan

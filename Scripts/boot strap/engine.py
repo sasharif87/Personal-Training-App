@@ -33,8 +33,9 @@ MODEL_PREFERENCES = {
         "deepseek-coder-v2:16b",  # fallback — can reason okay
     ],
     "code": [
-        "deepseek-coder-v2:16b", "qwen2.5-coder:32b", "qwen2.5-coder:14b",
-        "qwen2.5-coder:7b", "codellama:34b", "codellama:13b",
+        "qwen2.5-coder:32b", "qwen2.5-coder:14b", "qwen2.5-coder:7b",
+        "deepseek-coder-v2:16b",  # older architecture — fallback if no qwen2.5-coder available
+        "codellama:34b", "codellama:13b",
         "deepseek-r1:14b",  # fallback — can code okay
         "llama3.1:8b",
     ],
@@ -110,11 +111,17 @@ class Engine:
                 if pref in self._available:
                     self._resolved[role] = pref
                     break
-                # Partial match — "deepseek-coder-v2" matches "deepseek-coder-v2:16b"
-                for avail in self._available:
-                    if pref.split(":")[0] in avail:
-                        self._resolved[role] = avail
-                        break
+                # Partial match — only when pref has no size tag (e.g. "deepseek-coder-v2"
+                # matches "deepseek-coder-v2:16b").  Never let a sized preference like
+                # "qwen2.5-coder:7b" silently resolve to a larger variant like :32b —
+                # that breaks the quick/reason separation and causes GPU contention.
+                pref_base, pref_size = (pref.split(":", 1) + [""])[:2]
+                if not pref_size:
+                    # Unsized pref — safe to partial-match against any available variant
+                    for avail in self._available:
+                        if pref_base in avail:
+                            self._resolved[role] = avail
+                            break
                 if role in self._resolved:
                     break
 

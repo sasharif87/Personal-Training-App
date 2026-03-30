@@ -144,8 +144,11 @@ class TestGenerator:
                 rules_summary=rules_summary, code=code[:10_000],
             )
 
+            # If quick resolved to the same model as code, use code role to avoid
+            # double-booking the same model and stalling Ollama.
+            quick_role = "quick" if self.engine.model_for("quick") != self.engine.model_for("code") else "code"
             try:
-                resp = self.engine.generate(prompt, role="quick", num_ctx=8192, timeout=120)
+                resp = self.engine.generate(prompt, role=quick_role, num_ctx=4096, timeout=120)
                 plan = extract_json(resp)
                 if plan and plan.get("testable"):
                     self.plans[rel] = plan
