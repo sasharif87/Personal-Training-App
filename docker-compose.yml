@@ -1,17 +1,172 @@
-version: '3'
+# AI Coaching System — Docker Compose
+# Deploy on TrueNAS SCALE via Custom App or Portainer
+#
+# TrueNAS dataset layout (edit paths to match your pool):
+#   /mnt/<pool>/coaching/influxdb/
+#   /mnt/<pool>/coaching/chromadb/
+#   /mnt/<pool>/coaching/grafana/
+#   /mnt/<pool>/coaching/garmin/          ← FIT archive + garmindb SQLite
+#   /mnt/<pool>/coaching/garth/           ← garth session tokens
+#   /mnt/<pool>/coaching/logs/
+#   /mnt/<pool>/coaching/zwift_workouts/  ← drop .zwo here (or Syncthing target)
+#
+# Ollama runs externally — set OLLAMA_BASE_URL in .env to http://192.168.50.46:11434
+
+version: "3.9"
+
 services:
-  web:
-    build: .
+
+  # ---------------------------------------------------------------------------
+  # InfluxDB 2.x — time-series storage (HR, power, pace, HRV, TSS)
+  # ---------------------------------------------------------------------------
+  influxdb:
+    image: influxdb:2.7
+    container_name: coaching_influxdb
+    restart: unless-stopped
     ports:
-      - "5000:5000"
-    volumes:
-      - .:/code
+      - "8086:8086"
     environment:
-      - FLASK_ENV=development
-      - FLASK_APP=app.py
-  db:
-    image: postgres
+      DOCKER_INFLUXDB_INIT_MODE: setup
+      DOCKER_INFLUXDB_INIT_USERNAME: ${INFLUXDB_USERNAME:-admin}
+      DOCKER_INFLUXDB_INIT_PASSWORD: ${INFLUXDB_PASSWORD}
+      DOCKER_INFLUXDB_INIT_ORG: ${INFLUXDB_ORG:-coaching}
+      DOCKER_INFLUXDB_INIT_BUCKET: ${INFLUXDB_BUCKET:-training}
+      DOCKER_INFLUXDB_INIT_ADMIN_TOKEN: ${INFLUXDB_TOKEN}
     volumes:
-      - db-data:/var/lib/postgresql/data
+      - influxdb-data:/var/lib/influxdb2
+      - influxdb-config:/etc/influxdb2
+    healthcheck:
+      test: ["CMD", "influx", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # ---------------------------------------------------------------------------
+  # ChromaDB — vector store for RAG (historical training block embeddings)
+  # ---------------------------------------------------------------------------
+  chromadb:
+    image: chromadb/chroma:latest
+    container_name: coaching_chromadb
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      - chromadb-data:/chroma/chroma
+    environment:
+      ANONYMIZED_TELEMETRY: "false"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/heartbeat"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # ---------------------------------------------------------------------------
+  # Grafana — fitness dashboards (CTL/ATL/TSB, HRV, plan vs actual)
+  # ---------------------------------------------------------------------------
+  grafana:
+    image: grafana/grafana:latest
+    container_name: coaching_grafana
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD}
+      GF_INSTALL_PLUGINS: grafana-clock-panel,grafana-simple-json-datasource
+      GF_SERVER_ROOT_URL: http://jupiter:3000
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+    depends_on:
+      influxdb:
+        condition: service_healthy
+
+  # ---------------------------------------------------------------------------
+  # Config UI — season/block/race/athlete config form (port 8080)
+  # ---------------------------------------------------------------------------
+  config-ui:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: coaching_config_ui
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      SEASON_CONFIG_PATH: /config/season.json
+      WORKOUTS_CONFIG_DIR: /app/config/workouts
+      WORKOUT_IMPORT_DIR: /data/workout_imports
+      INFLUXDB_URL: http://influxdb:8086
+      INFLUXDB_TOKEN: ${INFLUXDB_TOKEN}
+      INFLUXDB_ORG: ${INFLUXDB_ORG:-coaching}
+      INFLUXDB_BUCKET: ${INFLUXDB_BUCKET:-training}
+    volumes:
+      - season-config:/config
+      - workout-imports:/data/workout_imports
+    command: uvicorn backend.api.app:app --host 0.0.0.0 --port 8080
+    depends_on:
+      influxdb:
+        condition: service_healthy
+
+  # ---------------------------------------------------------------------------
+  # Coaching App — daily pipeline + manual triggers
+  # Ollama is NOT containerised — runs externally on 192.168.50.46:11434
+  # ---------------------------------------------------------------------------
+  coaching-app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: coaching_app
+    restart: unless-stopped
+    environment:
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://192.168.50.46:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.1:70b}
+      INFLUXDB_URL: http://influxdb:8086
+      INFLUXDB_TOKEN: ${INFLUXDB_TOKEN}
+      INFLUXDB_ORG: ${INFLUXDB_ORG:-coaching}
+      INFLUXDB_BUCKET: ${INFLUXDB_BUCKET:-training}
+      CHROMADB_HOST: chromadb
+      CHROMADB_PORT: "8000"
+      GARMIN_USERNAME: ${GARMIN_USERNAME}
+      GARMIN_PASSWORD: ${GARMIN_PASSWORD}
+      GARMIN_DATA_DIR: /data/garmin
+      GARTH_HOME: /data/garth
+      ZWIFT_WORKOUTS_DIR: /data/zwift_workouts
+      LOG_DIR: /data/logs
+      SEASON_CONFIG_PATH: /config/season.json
+      WORKOUTS_CONFIG_DIR: /app/config/workouts
+      WORKOUT_IMPORT_DIR: /data/workout_imports
+      TZ: ${TZ:-Australia/Melbourne}
+    volumes:
+      - garmin-data:/data/garmin
+      - garth-tokens:/data/garth
+      - zwift-workouts:/data/zwift_workouts
+      - logs:/data/logs
+      - season-config:/config
+      - workout-imports:/data/workout_imports
+    depends_on:
+      influxdb:
+        condition: service_healthy
+      chromadb:
+        condition: service_healthy
+    # Default: stay alive so you can exec in or trigger manually
+    # The 3 AM cron is managed by the app's internal APScheduler
+    command: python main.py --daemon
+
+# ---------------------------------------------------------------------------
+# Volumes
+# On TrueNAS: replace these with bind mounts to your datasets, e.g.:
+#   driver: local
+#   driver_opts: { type: none, device: /mnt/pool/coaching/influxdb, o: bind }
+# ---------------------------------------------------------------------------
 volumes:
-  db-data:
+  influxdb-data:
+  influxdb-config:
+  chromadb-data:
+  grafana-data:
+  garmin-data:
+  garth-tokens:
+  zwift-workouts:
+  logs:
+  season-config:
+  workout-imports:

@@ -1,0 +1,141 @@
+[
+  {
+    "title": "CSS Test 400/200",
+    "description": "Standard CSS time trial. Record both times — CSS = (400-200) / (T400 - T200). Do this at the start of every new block.",
+    "tags": ["test", "css", "fitness-check"],
+    "estimated_tss": 45,
+    "steps": [
+      {"type": "warmup",   "distance_m": 400,  "target_value": 0.80, "target_type": "pace", "repeat": 1, "description": "400 easy warmup"},
+      {"type": "interval", "distance_m": 50,   "target_value": 1.05, "target_type": "pace", "repeat": 4, "description": "4×50 build — last one at 95%, prime CNS"},
+      {"type": "recovery", "duration_sec": 300, "target_value": 0.60, "target_type": "pace", "repeat": 1, "description": "5 min full rest before TT"},
+      {"type": "interval", "distance_m": 400,  "target_value": 1.10, "target_type": "pace", "repeat": 1, "description": "400m TT — maximal sustained, even splits. RECORD TIME."},
+      {"type": "recovery", "duration_sec": 300, "target_value": 0.60, "target_type": "pace", "repeat": 1, "description": "5 min full rest"},
+      {"type": "interval", "distance_m": 200,  "target_value": 1.15, "target_type": "pace", "repeat": 1, "description": "200m TT — maximal effort. RECORD TIME."},
+      {"type": "cooldown", "distance_m": 200,  "target_value": 0.75, "target_type": "pace", "repeat": 1, "description": "Easy cooldown"}
+    ]
+  },
+  {
+    "title": "CSS Threshold Repeats 10×100",
+    "description": "Classic CSS main set. 10×100 on tight rest builds lactate tolerance at threshold pace.",
+    "tags": ["threshold", "css", "build", "intervals"],
+    "estimated_tss": 60,
+    "steps": [
+      {"type": "warmup",   "distance_m": 400,  "target_value": 0.80, "target_type": "pace", "repeat": 1, "description": "400 easy"},
+      {"type": "interval", "distance_m": 50,   "target_value": 0.95, "target_type": "pace", "repeat": 4, "description": "4×50 build into pace"},
+      {"type": "interval", "distance_m": 100,  "target_value": 1.00, "target_type": "pace", "repeat": 10, "description": "10×100 @ CSS — 15s rest between. Hold pace through set."},
+      {"type": "cooldown", "distance_m": 200,  "target_value": 0.75, "target_type": "pace", "repeat": 1, "description": "Easy cooldown"}
+    ]
+  },
+  {
+    "title": "CSS Ladder 100-200-400",
+    "description": "Progressive CSS set — builds threshold tolerance through increasing rep distance.",
+    "tags": ["threshold", "css", "base", "build"],
+    "estimated_tss": 55,
+    "steps": [
+      {"type": "warmup",   "distance_m": 400,  "target_value": 0.80, "target_type": "pace", "repeat": 1, "description": "Easy warmup, focus on stroke length"},
+      {"type": "interval", "distance_m": 100,  "target_value": 1.00, "target_type": "pace", "repeat": 4, "description": "4×100 @ CSS — 15s rest"},
+      {"type": "recovery", "distance_m": 100,  "target_value": 0.70, "target_type": "pace", "repeat": 1, "description": "Easy 100 recovery"},
+      {"type": "interval", "distance_m": 200,  "target_value": 1.00, "target_type": "pace", "repeat": 2, "description": "2×200 @ CSS — 20s rest"},
+      {"type": "recovery", "distance_m": 100,  "target_value": 0.70, "target_type": "pace", "repeat": 1, "description": "Easy recovery"},
+      {"type": "interval", "distance_m": 400,  "target_value": 1.00, "target_type": "pace", "repeat": 1, "description": "400 @ CSS — settle into rhythm"},
+      {"type": "cooldown", "distance_m": 200,  "target_value": 0.75, "target_type": "pace", "repeat": 1, "description": "Easy cooldown"}
+    ]
+  },
+  {
+    "title": "Aerobic Base Z2 1800",
+    "description": "Long continuous aerobic swim. Builds base and stroke efficiency. No pace pressure — just move.",
+    "tags": ["aerobic", "z2", "base", "endurance"],
+    "estimated_tss": 50,
+    "steps": [
+      {"type": "warmup",   "distance_m": 200,  "target_value": 0.80, "target_type": "pace", "repeat": 1, "description": "Build into pace"},
+      {"type": "interval", "distance_m": 1500, "target_value": 0.88, "target_type": "pace", "repeat": 1, "description": "1500 continuous Z2 — nose breathing if possible, long stroke"},
+      {"type": "cooldown", "distance_m": 100,  "target_value": 0.75, "target_type": "pace", "repeat": 1, "description": "Easy out"}
+    ]
+  },
+  {
+    "title": "Speed Development 16×50",
+    "description": "Short fast reps to develop neuromuscular speed and DPS. Full recovery. Count strokes per length.",
+    "tags": ["speed", "neuromuscular", "peak"],
+    "estimated_tss": 35,
+    "steps": [
+      {"type": "warmup",   "distance_m": 400,  "target_value": 0.80, "target_type": "pace", "repeat": 1, "description": "Easy warmup"},
+      {"type": "interval", "distance_m": 50,   "target_value": 0.90, "target_type": "pace", "repeat": 4, "description": "4×50 progressive build to 95%"},
+      {"type": "interval", "distance_m": 50,   "target_value": 1.20, "target_type": "pace", "repeat": 16, "description": "16×50 fast — 30s full rest. Max DPS, count strokes. Never more than +2 strokes from best."},
+      {"type": "cooldown", "distance_m": 200,  "target_value": 0.75, "target_type": "pace", "repeat": 1, "description": "Easy cooldown"}
+    ]
+  },
+  {
+    "title": "Over-Under 200s",
+    "description": "Alternating above/below CSS develops the ability to surge and recover while maintaining threshold. Race-specific.",
+    "tags": ["threshold", "over-under", "build", "race-specific"],
+    "estimated_tss": 65,
+    "steps": [
+      {"type": "warmup",   "distance_m": 400,  "target_value": 0.80, "target_type": "pace", "repeat": 1, "description": "Relaxed warmup"},
+      {"type": "interval", "distance_m": 200,  "target_value": 1.05, "target_type": "pace", "repeat": 2, "description": "2×200 @ 5% above CSS (over) — 30s rest"},
+      {"type": "interval", "distance_m": 200,  "target_value": 0.95, "target_type": "pace", "repeat": 2, "description": "2×200 @ 5% below CSS (under) — 20s rest"},
+      {"type": "interval", "distance_m": 200,  "target_value": 1.05, "target_type": "pace", "repeat": 2, "description": "2×200 over — 30s rest"},
+      {"type": "interval", "distance_m": 200,  "target_value": 0.95, "target_type": "pace", "repeat": 2, "description": "2×200 under — 20s rest"},
+      {"type": "cooldown", "distance_m": 200,  "target_value": 0.75, "target_type": "pace", "repeat": 1, "description": "Easy cooldown"}
+    ]
+  },
+  {
+    "title": "Broken 1000 @ CSS",
+    "description": "4×250 with 10s micro-rest. Nearly continuous but rests help you hold quality pace longer than solid 1000.",
+    "tags": ["threshold", "css", "build"],
+    "estimated_tss": 58,
+    "steps": [
+      {"type": "warmup",   "distance_m": 400,  "target_value": 0.80, "target_type": "pace", "repeat": 1, "description": "400 easy"},
+      {"type": "interval", "distance_m": 250,  "target_value": 1.00, "target_type": "pace", "repeat": 4, "description": "4×250 @ CSS — 10s micro-rest. Target CSS split every 250."},
+      {"type": "interval", "distance_m": 200,  "target_value": 0.88, "target_type": "pace", "repeat": 1, "description": "200 aerobic pull"},
+      {"type": "cooldown", "distance_m": 200,  "target_value": 0.75, "target_type": "pace", "repeat": 1, "description": "Easy cooldown"}
+    ]
+  },
+  {
+    "title": "Olympic Tri Race Swim 750",
+    "description": "Race-simulation. Starts hard, settles, practices sighting. Exit pool onto bike within 3 min.",
+    "tags": ["race-specific", "olympic", "brick", "open-water"],
+    "estimated_tss": 40,
+    "steps": [
+      {"type": "warmup",   "distance_m": 200,  "target_value": 0.85, "target_type": "pace", "repeat": 1, "description": "Activation warmup"},
+      {"type": "interval", "distance_m": 50,   "target_value": 1.15, "target_type": "pace", "repeat": 2, "description": "2×50 race starts — hard out, settle after 25m"},
+      {"type": "interval", "distance_m": 750,  "target_value": 1.02, "target_type": "pace", "repeat": 1, "description": "750m continuous @ Olympic race pace — sight every 10 strokes, bilateral breathing"},
+      {"type": "cooldown", "distance_m": 100,  "target_value": 0.75, "target_type": "pace", "repeat": 1, "description": "Easy out"}
+    ]
+  },
+  {
+    "title": "IM 70.3 Swim Simulation 1900",
+    "description": "Half-Ironman race swim. Sustained 70.3 pace. Fueling window begins immediately on exit.",
+    "tags": ["70.3", "race-specific", "endurance"],
+    "estimated_tss": 65,
+    "steps": [
+      {"type": "warmup",   "distance_m": 300,  "target_value": 0.80, "target_type": "pace", "repeat": 1, "description": "Easy warmup"},
+      {"type": "interval", "distance_m": 1900, "target_value": 0.95, "target_type": "pace", "repeat": 1, "description": "1900m continuous @ 70.3 pace (95% CSS) — relax, sustainable stroke"},
+      {"type": "cooldown", "distance_m": 200,  "target_value": 0.75, "target_type": "pace", "repeat": 1, "description": "Easy cooldown"}
+    ]
+  },
+  {
+    "title": "Ironman Swim Endurance 3800",
+    "description": "Full IM swim distance. Fueling discipline, pacing, long sustainable stroke. Do not go to CSS.",
+    "tags": ["ironman", "endurance", "race-specific", "aerobic"],
+    "estimated_tss": 85,
+    "steps": [
+      {"type": "warmup",   "distance_m": 400,  "target_value": 0.80, "target_type": "pace", "repeat": 1, "description": "Easy warmup"},
+      {"type": "interval", "distance_m": 3800, "target_value": 0.93, "target_type": "pace", "repeat": 1, "description": "3800m continuous @ IM pace — 93% CSS, relaxed, long stroke. Fuel every 30 min."},
+      {"type": "cooldown", "distance_m": 200,  "target_value": 0.75, "target_type": "pace", "repeat": 1, "description": "Easy cooldown"}
+    ]
+  },
+  {
+    "title": "Drill and Skill 45 min",
+    "description": "Technique focus session. Catch-up drill, fingertip drag, side kick, fist drill. No pace targets.",
+    "tags": ["technique", "drill", "base", "recovery"],
+    "estimated_tss": 20,
+    "steps": [
+      {"type": "warmup",   "distance_m": 400,  "target_value": 0.80, "target_type": "pace", "repeat": 1, "description": "Easy warmup"},
+      {"type": "interval", "distance_m": 50,   "target_value": 0.70, "target_type": "pace", "repeat": 4, "description": "4×50 catch-up drill — exaggerate extension"},
+      {"type": "interval", "distance_m": 50,   "target_value": 0.70, "target_type": "pace", "repeat": 4, "description": "4×50 fingertip drag — high elbow recovery"},
+      {"type": "interval", "distance_m": 50,   "target_value": 0.70, "target_type": "pace", "repeat": 4, "description": "4×50 side kick — balance and rotation"},
+      {"type": "interval", "distance_m": 100,  "target_value": 0.85, "target_type": "pace", "repeat": 4, "description": "4×100 swim — apply drills, count strokes"},
+      {"type": "cooldown", "distance_m": 200,  "target_value": 0.75, "target_type": "pace", "repeat": 1, "description": "Easy cooldown"}
+    ]
+  }
+]

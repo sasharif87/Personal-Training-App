@@ -1,0 +1,139 @@
+# main.py
+"""
+AI Coaching System — entry point.
+
+Modes:
+  python main.py                  Run the pipeline once right now
+  python main.py --dry-run        Generate plan but skip device pushes
+  python main.py --skip-sync      Skip Garmin sync (use existing InfluxDB data)
+  python main.py --daemon         Run as a daemon with APScheduler (3 AM cron)
+  python main.py --status         Print current CTL/ATL/TSB and HRV to stdout
+
+Environment:
+  PIPELINE_CRON   cron expression for daemon mode (default: "0 3 * * *")
+  TZ              timezone for scheduler (default: Australia/Melbourne)
+
+Usage in Docker:
+  CMD ["python", "main.py", "--daemon"]
+"""
+
+import argparse
+import logging
+import os
+import sys
+from datetime import datetime
+
+# ---------------------------------------------------------------------------
+# Logging setup — console + file
+# ---------------------------------------------------------------------------
+log_dir = os.environ.get("LOG_DIR", "/data/logs")
+os.makedirs(log_dir, exist_ok=True)
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    handlers=[
+        logging.StreamHandler(sys.stdout),
+        logging.FileHandler(os.path.join(log_dir, "pipeline.log")),
+    ],
+)
+logger = logging.getLogger("main")
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+def parse_args():
+    parser = argparse.ArgumentParser(description="AI Coaching System pipeline runner")
+    parser.add_argument("--daemon",     action="store_true", help="Run as scheduled daemon (APScheduler)")
+    parser.add_argument("--dry-run",    action="store_true", help="Generate plan only, skip device push")
+    parser.add_argument("--skip-sync",  action="store_true", help="Skip Garmin Connect sync step")
+    parser.add_argument("--status",     action="store_true", help="Print current fitness state and exit")
+    return parser.parse_args()
+
+
+# ---------------------------------------------------------------------------
+# Single run
+# ---------------------------------------------------------------------------
+def run_pipeline(dry_run: bool = False, skip_sync: bool = False) -> int:
+    from backend.orchestration.daily_pipeline import DailyPipeline
+    pipeline = DailyPipeline()
+    try:
+        plan = pipeline.run(skip_sync=skip_sync, dry_run=dry_run)
+        logger.info("Pipeline succeeded — week %d, %d sessions", plan.week_number, len(plan.sessions))
+        return 0
+    except Exception as exc:
+        logger.error("Pipeline failed: %s", exc, exc_info=True)
+        return 1
+
+
+# ---------------------------------------------------------------------------
+# Status check
+# ---------------------------------------------------------------------------
+def print_status() -> None:
+    from backend.storage.influx_client import InfluxClient
+    from backend.analysis.fitness_models import calculate_ctl_atl_tsb
+
+    influx = InfluxClient()
+    tss = influx.get_daily_tss(days=120)
+    hrv = influx.get_hrv_trend(days=14)
+
+    if tss.empty:
+        print("No TSS data in InfluxDB — run a sync first.")
+        return
+
+    ctl, atl, tsb = calculate_ctl_atl_tsb(tss)
+    print(f"\n{'='*40}")
+    print(f"  Fitness Status — {datetime.now().strftime('%Y-%m-%d')}")
+    print(f"{'='*40}")
+    print(f"  CTL (Fitness)  : {ctl.iloc[-1]:.1f}")
+    print(f"  ATL (Fatigue)  : {atl.iloc[-1]:.1f}")
+    print(f"  TSB (Form)     : {tsb.iloc[-1]:.1f}")
+    print(f"  HRV Trend      : {hrv}")
+    print(f"{'='*40}\n")
+    influx.close()
+
+
+# ---------------------------------------------------------------------------
+# Daemon mode — APScheduler
+# ---------------------------------------------------------------------------
+def run_daemon() -> None:
+    try:
+        from apscheduler.schedulers.blocking import BlockingScheduler
+        from apscheduler.triggers.cron import CronTrigger
+    except ImportError:
+        logger.error("APScheduler not installed — add 'apscheduler' to requirements.txt")
+        sys.exit(1)
+
+    cron = os.environ.get("PIPELINE_CRON", "0 3 * * *")
+    tz = os.environ.get("TZ", "Australia/Melbourne")
+
+    scheduler = BlockingScheduler(timezone=tz)
+    trigger = CronTrigger.from_crontab(cron, timezone=tz)
+
+    scheduler.add_job(run_pipeline, trigger, id="daily_pipeline", misfire_grace_time=3600)
+
+    logger.info("Daemon started — scheduled: '%s' (%s)", cron, tz)
+    logger.info("Next run: %s", scheduler.get_job("daily_pipeline").next_run_time)
+
+    try:
+        scheduler.start()
+    except (KeyboardInterrupt, SystemExit):
+        logger.info("Daemon shutting down")
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+if __name__ == "__main__":
+    args = parse_args()
+
+    if args.status:
+        print_status()
+        sys.exit(0)
+
+    if args.daemon:
+        run_daemon()
+    else:
+        exit_code = run_pipeline(dry_run=args.dry_run, skip_sync=args.skip_sync)
+        sys.exit(exit_code)

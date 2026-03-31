@@ -1,0 +1,22 @@
+{
+  "athlete": {
+    "ftp": 250,
+    "css": "1:45/100m",
+    "lthr_run": 162
+  },
+  "block": {
+    "phase": "Base",
+    "week_in_block": 1
+  },
+  "race_a": {
+    "date": "2026-12-01",
+    "format": "Olympic",
+    "priority": "A"
+  },
+  "race_b": {
+    "date": "",
+    "format": "",
+    "priority": "B"
+  },
+  "notes": ""
+}

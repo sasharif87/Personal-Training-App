@@ -1,0 +1,170 @@
+# backend/orchestration/weekly_pipeline.py
+"""
+WeeklyPipeline — reviews and adjusts the coming week each Sunday at 3am.
+
+Does NOT regenerate the full month. Takes the coming week from the stored
+monthly plan and adjusts it against prior week execution drift.
+
+Steps:
+  1. Load active monthly plan from PostgreSQL
+  2. Score prior week execution (planned vs actual)
+  3. Pull current fitness state
+  4. Call Ollama weekly review prompt
+  5. Store revised week back into the monthly plan
+  6. Push revised sessions to Garmin + Zwift
+"""
+
+import logging
+import os
+from datetime import date, timedelta
+from typing import Optional
+
+from backend.config_manager import ConfigManager
+from backend.storage.influx_client import InfluxClient
+from backend.storage.postgres_client import PostgresClient
+from backend.orchestration.llm_client import OllamaClient, build_weekly_review_context
+from backend.analysis.fitness_models import calculate_ctl_atl_tsb
+from backend.analysis.execution_scoring import summarise_week, score_execution, score_missed_session
+from backend.schemas.workout import WeekPlan
+from backend.output.garmin_push import GarminPush
+from backend.output.zwift_writer import ZwiftWriter
+
+logger = logging.getLogger(__name__)
+
+
+class WeeklyPipeline:
+    def __init__(
+        self,
+        influx: Optional[InfluxClient] = None,
+        postgres: Optional[PostgresClient] = None,
+        llm: Optional[OllamaClient] = None,
+        garmin_push: Optional[GarminPush] = None,
+        zwift: Optional[ZwiftWriter] = None,
+        config: Optional[ConfigManager] = None,
+    ):
+        self.influx = influx or InfluxClient()
+        self.postgres = postgres or PostgresClient()
+        self.llm = llm or OllamaClient(
+            base_url=os.environ.get("OLLAMA_BASE_URL", "http://192.168.50.46:11434"),
+            model=os.environ.get("OLLAMA_MODEL", "llama3.1:70b"),
+        )
+        self.garmin_push = garmin_push or GarminPush()
+        self.zwift = zwift or ZwiftWriter()
+        self.cfg = config or ConfigManager()
+
+    def run(self, dry_run: bool = False) -> WeekPlan:
+        logger.info("=== Weekly review starting — %s ===", date.today().isoformat())
+
+        # --- Load active monthly plan ---
+        monthly_plan = self.postgres.get_active_monthly_plan()
+        if not monthly_plan:
+            raise RuntimeError("No active monthly plan in PostgreSQL — run monthly generation first")
+
+        week_number = self.cfg.block_week()
+        weeks = monthly_plan.get("weeks", [])
+        # Find the coming week (week_number - 1 as index, or first if not found)
+        coming_week_idx = min(week_number - 1, len(weeks) - 1)
+        coming_week = weeks[coming_week_idx] if weeks else {}
+
+        # --- Score prior week ---
+        prior_week_end = date.today() - timedelta(days=1)
+        prior_week_start = prior_week_end - timedelta(days=6)
+        planned = self.postgres.get_planned_sessions(
+            prior_week_start.isoformat(), prior_week_end.isoformat()
+        )
+        actual_activities = self.influx.get_yesterday_activities()  # last 7 days effectively
+        prior_scores = _match_and_score(planned, actual_activities)
+        prior_summary = summarise_week(prior_scores)
+        logger.info("Prior week: %s", prior_summary)
+
+        # --- Fitness state ---
+        tss = self.influx.get_daily_tss(days=60)
+        hrv = self.influx.get_hrv_trend(days=14)
+        if tss.empty:
+            ctl, atl, tsb = 0.0, 0.0, 0.0
+        else:
+            c, a, t = calculate_ctl_atl_tsb(tss)
+            ctl, atl, tsb = float(c.iloc[-1]), float(a.iloc[-1]), float(t.iloc[-1])
+
+        fitness = {"ctl": round(ctl, 1), "atl": round(atl, 1), "tsb": round(tsb, 1), "hrv_trend": hrv}
+
+        context = build_weekly_review_context(
+            coming_week=coming_week,
+            prior_week_execution=prior_summary,
+            fitness_state=fitness,
+        )
+
+        # --- LLM call ---
+        logger.info("Calling Ollama weekly review (model: %s)", self.llm.model)
+        raw = self.llm.generate_weekly_review(context)
+
+        try:
+            revised_week = WeekPlan.model_validate(raw)
+        except Exception as exc:
+            logger.error("WeekPlan validation failed: %s", exc)
+            raise
+
+        logger.info(
+            "Weekly review complete — %s changes: %s",
+            revised_week.week_number,
+            raw.get("changes_rationale", "none")[:120],
+        )
+
+        if not dry_run:
+            _push_week(revised_week, self.garmin_push, self.zwift, self.cfg)
+
+        return revised_week
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _match_and_score(planned_sessions, actual_activities):
+    """Simple date+sport matching between planned sessions and actual activities."""
+    from backend.analysis.execution_scoring import score_execution, score_missed_session
+    from backend.schemas.workout import ExecutionScore
+
+    scores = []
+    actual_by_date_sport = {}
+    for act in actual_activities:
+        key = (act.get("time", "")[:10], act.get("sport", ""))
+        actual_by_date_sport[key] = act
+
+    for planned in planned_sessions:
+        key = (str(planned.get("planned_date", ""))[:10], planned.get("sport", ""))
+        actual = actual_by_date_sport.get(key)
+        if actual:
+            scores.append(score_execution(planned, actual))
+        else:
+            scores.append(score_missed_session(planned))
+
+    return scores
+
+
+def _push_week(week: WeekPlan, garmin: GarminPush, zwift: ZwiftWriter, cfg: ConfigManager):
+    """Push revised week sessions to Garmin and Zwift."""
+    from datetime import timedelta
+    from backend.analysis.tss_calculators import css_str_to_sec
+
+    ftp = cfg.athlete_ftp()
+    css_str = cfg.athlete_css()
+    css_mps = 100.0 / css_str_to_sec(css_str)
+
+    push_date = date.today() + timedelta(days=1)  # start Monday
+    sessions = week.sessions or [day.primary for day in (week.days or []) if day.primary]
+
+    for session in sessions:
+        if not session:
+            continue
+        try:
+            if session.sport in ("bike", "brick"):
+                try:
+                    zwift.write(session)
+                except Exception as exc:
+                    logger.error("Zwift write failed for '%s': %s", session.title, exc)
+            wid = garmin.push_workout(session, athlete_ftp=ftp, athlete_css_mps=css_mps)
+            garmin.schedule_workout(wid, push_date.isoformat())
+            push_date += timedelta(days=1)
+        except Exception as exc:
+            logger.error("Push failed for '%s': %s", session.title, exc)

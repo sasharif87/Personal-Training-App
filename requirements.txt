@@ -4,7 +4,7 @@ numpy
 scipy
 
 # Schemas & config
-pydantic
+pydantic>=2.0
 python-dotenv
 
 # Data ingestion
@@ -24,6 +24,15 @@ openmeteo-requests
 # Inference (Ollama via HTTP — no extra SDK needed)
 requests
 
-# Development
+# Config UI
+fastapi>=0.110
+uvicorn[standard]
+python-multipart
+
+# Scheduling (daemon mode)
+apscheduler>=3.10
+
+# Development & analysis
 jupyterlab
 pytest
+pytest-mock

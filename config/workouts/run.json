@@ -1,0 +1,145 @@
+[
+  {
+    "title": "Easy Aerobic Z2",
+    "description": "Foundation aerobic run. The majority of weekly volume should be here. Conversational pace, HR in Z2.",
+    "tags": ["aerobic", "z2", "base", "endurance", "recovery"],
+    "estimated_tss": 50,
+    "steps": [
+      {"type": "warmup",   "duration_sec": 300,  "target_value": 0.80, "target_type": "hr", "repeat": 1, "description": "Walk/jog warmup, build to Z2"},
+      {"type": "interval", "duration_sec": 3000, "target_value": 0.83, "target_type": "hr", "repeat": 1, "description": "50 min Z2 — conversational pace, 65-75% LTHR. Nose breathing target."},
+      {"type": "cooldown", "duration_sec": 300,  "target_value": 0.70, "target_type": "hr", "repeat": 1, "description": "Easy walk cooldown"}
+    ]
+  },
+  {
+    "title": "Threshold Tempo 20 min",
+    "description": "Sustained lactate threshold pace. Comfortably hard — you can speak a sentence, not a paragraph.",
+    "tags": ["threshold", "tempo", "build"],
+    "estimated_tss": 65,
+    "steps": [
+      {"type": "warmup",   "duration_sec": 1200, "target_value": 0.80, "target_type": "hr", "repeat": 1, "description": "20 min easy warmup — build to Z3 by end"},
+      {"type": "interval", "duration_sec": 1200, "target_value": 0.95, "target_type": "hr", "repeat": 1, "description": "20 min @ threshold — 92-95% LTHR, race pace feel. Even effort."},
+      {"type": "cooldown", "duration_sec": 600,  "target_value": 0.75, "target_type": "hr", "repeat": 1, "description": "10 min easy cooldown"}
+    ]
+  },
+  {
+    "title": "Cruise Intervals 5×8 min",
+    "description": "Threshold repeats with short rest. Accumulates threshold time while staying fresher than a solid tempo block.",
+    "tags": ["threshold", "intervals", "build"],
+    "estimated_tss": 70,
+    "steps": [
+      {"type": "warmup",   "duration_sec": 1200, "target_value": 0.80, "target_type": "hr", "repeat": 1, "description": "20 min easy warmup"},
+      {"type": "interval", "duration_sec": 480,  "target_value": 0.95, "target_type": "hr", "repeat": 5, "description": "5×8 min @ threshold (92-95% LTHR) — 90s jog rest between"},
+      {"type": "cooldown", "duration_sec": 600,  "target_value": 0.75, "target_type": "hr", "repeat": 1, "description": "10 min easy cooldown"}
+    ]
+  },
+  {
+    "title": "VO2max 4×4 min",
+    "description": "Norwegian-style VO2max intervals. Short enough to hold quality, long enough to drive adaptation. 3 min active recovery.",
+    "tags": ["vo2max", "intervals", "build", "peak"],
+    "estimated_tss": 75,
+    "steps": [
+      {"type": "warmup",   "duration_sec": 1200, "target_value": 0.80, "target_type": "hr", "repeat": 1, "description": "20 min easy — include 4×30s strides in final 5 min"},
+      {"type": "interval", "duration_sec": 240,  "target_value": 1.00, "target_type": "hr", "repeat": 4, "description": "4×4 min @ 100-103% LTHR — 3 min jog recovery. Hard but not all-out."},
+      {"type": "cooldown", "duration_sec": 600,  "target_value": 0.75, "target_type": "hr", "repeat": 1, "description": "Easy cooldown"}
+    ]
+  },
+  {
+    "title": "Track 400m Repeats 8×400",
+    "description": "Classic track session for speed and lactate tolerance. Full recovery. Hit the same split every rep.",
+    "tags": ["speed", "track", "intervals", "peak", "lactate"],
+    "estimated_tss": 65,
+    "steps": [
+      {"type": "warmup",   "duration_sec": 1200, "target_value": 0.80, "target_type": "hr", "repeat": 1, "description": "20 min easy + dynamic drills + 4×100m strides"},
+      {"type": "interval", "duration_sec": 90,   "target_value": 1.05, "target_type": "hr", "repeat": 8, "description": "8×400m @ 5K race pace — 90s full standing rest. First 2 feel easy. Last 2 hard."},
+      {"type": "cooldown", "duration_sec": 600,  "target_value": 0.75, "target_type": "hr", "repeat": 1, "description": "10 min easy cooldown"}
+    ]
+  },
+  {
+    "title": "Track 800m Repeats 6×800",
+    "description": "800m repeats at 5K pace. Build lactate tolerance and running economy. Active recovery jogs.",
+    "tags": ["speed", "track", "intervals", "build"],
+    "estimated_tss": 70,
+    "steps": [
+      {"type": "warmup",   "duration_sec": 1200, "target_value": 0.80, "target_type": "hr", "repeat": 1, "description": "20 min easy warmup + strides"},
+      {"type": "interval", "duration_sec": 200,  "target_value": 1.03, "target_type": "hr", "repeat": 6, "description": "6×800m @ 5K–10K pace — 2 min jog recovery. Negative split each rep."},
+      {"type": "cooldown", "duration_sec": 600,  "target_value": 0.75, "target_type": "hr", "repeat": 1, "description": "Easy cooldown"}
+    ]
+  },
+  {
+    "title": "Long Run Z2 90 min",
+    "description": "Weekly long run cornerstone. Builds aerobic base, fat oxidation, durability. Easy throughout.",
+    "tags": ["long-run", "aerobic", "z2", "base", "endurance"],
+    "estimated_tss": 85,
+    "steps": [
+      {"type": "warmup",   "duration_sec": 300,  "target_value": 0.78, "target_type": "hr", "repeat": 1, "description": "Easy start"},
+      {"type": "interval", "duration_sec": 5100, "target_value": 0.82, "target_type": "hr", "repeat": 1, "description": "85 min Z2 — never above Z3. Walk hills if needed to keep HR honest."},
+      {"type": "cooldown", "duration_sec": 300,  "target_value": 0.70, "target_type": "hr", "repeat": 1, "description": "Walk cooldown"}
+    ]
+  },
+  {
+    "title": "Long Run with Race Pace Finish",
+    "description": "90 min long run with 20 min race pace finish. IM-specific — practice pacing off the bike on tired legs.",
+    "tags": ["long-run", "race-specific", "ironman", "endurance", "build"],
+    "estimated_tss": 100,
+    "steps": [
+      {"type": "warmup",   "duration_sec": 300,  "target_value": 0.78, "target_type": "hr", "repeat": 1, "description": "Easy start"},
+      {"type": "interval", "duration_sec": 4200, "target_value": 0.82, "target_type": "hr", "repeat": 1, "description": "70 min Z2 — comfortable, building fatigue intentionally"},
+      {"type": "interval", "duration_sec": 1200, "target_value": 0.93, "target_type": "hr", "repeat": 1, "description": "20 min @ IM race pace — lift effort without blowing up. This is the adaptation."},
+      {"type": "cooldown", "duration_sec": 300,  "target_value": 0.70, "target_type": "hr", "repeat": 1, "description": "Easy walk cooldown"}
+    ]
+  },
+  {
+    "title": "Fartlek 30 min",
+    "description": "Unstructured surges on feel. No watch targets — run by effort. Great for mental freshness.",
+    "tags": ["fartlek", "aerobic", "speed", "base"],
+    "estimated_tss": 55,
+    "steps": [
+      {"type": "warmup",   "duration_sec": 600,  "target_value": 0.80, "target_type": "hr", "repeat": 1, "description": "10 min easy warmup"},
+      {"type": "interval", "duration_sec": 60,   "target_value": 1.00, "target_type": "hr", "repeat": 6, "description": "6× surge 1 min hard / 2 min easy — go by feel, no prescribed pace"},
+      {"type": "interval", "duration_sec": 600,  "target_value": 0.83, "target_type": "hr", "repeat": 1, "description": "10 min Z2 continuous"},
+      {"type": "cooldown", "duration_sec": 300,  "target_value": 0.75, "target_type": "hr", "repeat": 1, "description": "Easy cooldown"}
+    ]
+  },
+  {
+    "title": "Hill Repeats 8×60s",
+    "description": "Strength-building hill sprints. Develops run-specific power and glute engagement. Full walk-down recovery.",
+    "tags": ["strength", "hills", "neuromuscular", "build"],
+    "estimated_tss": 60,
+    "steps": [
+      {"type": "warmup",   "duration_sec": 1200, "target_value": 0.80, "target_type": "hr", "repeat": 1, "description": "20 min easy — include flat strides"},
+      {"type": "interval", "duration_sec": 60,   "target_value": 1.02, "target_type": "hr", "repeat": 8, "description": "8×60s hard uphill — drive knees, pump arms. Walk back down full recovery."},
+      {"type": "cooldown", "duration_sec": 600,  "target_value": 0.75, "target_type": "hr", "repeat": 1, "description": "Easy cooldown"}
+    ]
+  },
+  {
+    "title": "Marathon Pace 3×3km",
+    "description": "Sustained marathon/IM run pace repeats. Develops race-pace economy. Moderate effort — not a hard session.",
+    "tags": ["race-specific", "marathon", "ironman", "threshold", "build"],
+    "estimated_tss": 72,
+    "steps": [
+      {"type": "warmup",   "duration_sec": 1200, "target_value": 0.80, "target_type": "hr", "repeat": 1, "description": "20 min easy"},
+      {"type": "interval", "duration_sec": 900,  "target_value": 0.90, "target_type": "hr", "repeat": 3, "description": "3×3km @ marathon pace — 87-90% LTHR. 3 min easy jog between."},
+      {"type": "cooldown", "duration_sec": 600,  "target_value": 0.75, "target_type": "hr", "repeat": 1, "description": "Easy cooldown"}
+    ]
+  },
+  {
+    "title": "Olympic Tri Run Off-Bike",
+    "description": "Run directly off the bike (brick). Starts with jelly legs — hold patience for first km, build to race pace.",
+    "tags": ["brick", "olympic", "race-specific", "build"],
+    "estimated_tss": 55,
+    "steps": [
+      {"type": "warmup",   "duration_sec": 300,  "target_value": 0.80, "target_type": "hr", "repeat": 1, "description": "First 5 min — let legs come around, hold back"},
+      {"type": "interval", "duration_sec": 2400, "target_value": 0.93, "target_type": "hr", "repeat": 1, "description": "40 min @ Olympic race pace — 90-95% LTHR, push last 10 min"},
+      {"type": "cooldown", "duration_sec": 300,  "target_value": 0.75, "target_type": "hr", "repeat": 1, "description": "Easy walk finish"}
+    ]
+  },
+  {
+    "title": "Recovery Jog 30 min",
+    "description": "Active recovery. Flush the legs — never let HR climb above Z1. If it does, walk.",
+    "tags": ["recovery", "z1", "easy"],
+    "estimated_tss": 20,
+    "steps": [
+      {"type": "interval", "duration_sec": 1800, "target_value": 0.72, "target_type": "hr", "repeat": 1, "description": "30 min very easy — walk breaks as needed. HR never above Z1."}
+    ]
+  }
+]
