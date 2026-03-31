@@ -1,4 +1,4 @@
-# AI Coaching System — Code Ideas & Technical Scratchpad
+# AI Coaching System — Code Scratchpad
 
 **Libraries · Data Formats · Patterns · Implementation Notes**
 
@@ -89,45 +89,1743 @@ class TrainingPeaksClient:
         return parse_tp_steps(structure.get("steps", []))
 ```
 
-### TrainerRoad Export
+### TrainerRoad — Workout Library & FIT Name Lookup
+
+TrainerRoad workout names are embedded in the Garmin FIT file metadata when TR sessions sync through Garmin. The pipeline extracts that name and looks it up in a local copy of the TR workout library to retrieve the full interval structure and coaching text.
+
+**`trainerroad-export`** is only needed once (or occasionally) to build the local library. It's not an ongoing dependency — once the library is on disk, everything runs from that local copy.
 
 ```bash
+# One-time (or occasional refresh) — pull the full TR workout library
 pip install trainerroad-export
-
-trainerroad-export --username X --password Y --output ./tr_workouts/
+trainerroad-export --username X --password Y --output ./tr_library/
 ```
-
-- Outputs workout JSON with name, description, interval structure, power targets
-- Match to Garmin completed activities by date to build plan/actual pairs
-- Store workout description text — the coaching intent is the valuable part
-- One-time historical pull; ongoing bike data comes via Garmin sync
 
 ```python
 import json
 from pathlib import Path
 
-def load_tr_workouts(tr_export_dir: str) -> list:
-    """Load all TrainerRoad exported workouts and normalise to unified schema."""
-    workouts = []
-    for f in Path(tr_export_dir).glob("*.json"):
+# ── Step 1: Build the workout library on first run ──────────────────────────
+
+def build_tr_library(export_dir: str) -> int:
+    """
+    Load TR workout library export into PostgreSQL.
+    Keyed by workout name — this is what gets matched against FIT file metadata.
+    Run once after trainerroad-export, refresh occasionally.
+    """
+    count = 0
+    for f in Path(export_dir).glob("*.json"):
         raw = json.loads(f.read_text())
-        workouts.append({
-            "session_id": raw["Id"],
+        db.execute("""
+            INSERT INTO tr_workout_library
+                (tr_id, name, name_lower, description, duration_min,
+                 tss, intensity_factor, structure)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (tr_id) DO UPDATE
+            SET name = EXCLUDED.name,
+                description = EXCLUDED.description,
+                structure = EXCLUDED.structure
+        """, (
+            raw["Id"],
+            raw["Name"],
+            raw["Name"].lower().strip(),
+            raw.get("Description", ""),
+            raw.get("Duration", 0) / 60,
+            raw.get("Tss"),
+            raw.get("If"),
+            json.dumps(parse_tr_intervals(raw.get("Intervals", [])))
+        ))
+        count += 1
+    return count
+
+
+# ── Step 2: Extract TR workout name from FIT file ───────────────────────────
+
+def extract_tr_workout_name(fit_data: dict) -> str | None:
+    """
+    Pull the TrainerRoad workout name from FIT file metadata.
+    TR embeds the workout name in the 'workout_name' field of the session message.
+    """
+    return fit_data.get("workout_name") or fit_data.get("session", {}).get("workout_name")
+
+
+# ── Step 3: Match FIT activity to TR library entry ──────────────────────────
+
+def lookup_tr_workout(workout_name: str) -> dict | None:
+    """
+    Look up a TR workout by name from the local library.
+    Tries exact match first, then normalised match (strip suffixes like +1, -1).
+    """
+    if not workout_name:
+        return None
+    
+    # Exact match
+    result = db.fetchone(
+        "SELECT * FROM tr_workout_library WHERE name_lower = %s",
+        (workout_name.lower().strip(),)
+    )
+    if result:
+        return result
+    
+    # Normalised match — strip variant suffix (+1, +2, -1, etc.)
+    # "Carillon +2" → try "Carillon" as base workout
+    base_name = strip_tr_variant_suffix(workout_name)
+    if base_name != workout_name:
+        result = db.fetchone(
+            "SELECT * FROM tr_workout_library WHERE name_lower = %s",
+            (base_name.lower().strip(),)
+        )
+        if result:
+            return {**result, "_matched_as_base": True}
+    
+    # Fuzzy match — name similarity + physiological profile confirmation
+    # Used when exact and base-name matching both fail.
+    # Name similarity alone is too weak — many TR workouts have similar names
+    # but very different targets. Confirming on IF, TSS, and workout type
+    # turns a name guess into a confident physiological match.
+    actual_if = activity.get("intensity_factor")
+    actual_tss = activity.get("tss")
+    actual_duration = activity.get("duration_min")
+    
+    result = find_tr_workout_by_profile(
+        name=workout_name,
+        actual_if=actual_if,
+        actual_tss=actual_tss,
+        actual_duration=actual_duration
+    )
+    
+    if result:
+        return {**result, "_matched_as_fuzzy": True}
+    
+    return None  # Unmatched — log for manual review
+
+def strip_tr_variant_suffix(name: str) -> str:
+    """'Carillon +2' → 'Carillon', 'Pettit -1' → 'Pettit'"""
+    import re
+    return re.sub(r'\s*[+-]\d+$', '', name).strip()
+
+
+def classify_workout_type(intensity_factor: float | None, duration_min: float | None) -> str:
+    """
+    Classify a workout into a broad physiological type from IF and duration.
+    TR workouts cluster clearly into these types — IF is the primary signal.
+    
+    Used both to classify the actual workout from the FIT file
+    and to filter the library before fuzzy name matching.
+    """
+    if intensity_factor is None:
+        return "unknown"
+    
+    if intensity_factor >= 1.05:
+        return "vo2max"          # VO2max / anaerobic — hard short intervals
+    elif intensity_factor >= 0.95:
+        return "threshold"       # FTP-level work — over/unders, threshold intervals
+    elif intensity_factor >= 0.88:
+        return "sweet_spot"      # Sweet spot — 88–94% FTP, TR's bread and butter
+    elif intensity_factor >= 0.76:
+        return "tempo"           # Tempo / upper Z3
+    elif intensity_factor >= 0.60:
+        return "endurance"       # Z2 aerobic endurance
+    else:
+        return "recovery"        # Active recovery / Z1
+
+
+def find_tr_workout_by_profile(
+    name: str,
+    actual_if: float | None,
+    actual_tss: float | None,
+    actual_duration: float | None
+) -> dict | None:
+    """
+    Multi-signal fuzzy match against the TR workout library.
+    
+    Scoring approach:
+    - Name similarity (pg_trgm): directional signal, not sufficient alone
+    - Workout type match (derived from IF): must match or very close — eliminates
+      the most dangerous mismatches (VO2max ≠ endurance regardless of name)
+    - IF delta: within ±0.06 is plausible; tighter is better
+    - TSS delta: within ±15% is plausible
+    - Duration delta: within ±10min is plausible
+    
+    A match requires: name similarity > 0.55 AND workout type match
+    AND at least one of (IF delta ok OR TSS delta ok).
+    All three physiological signals agreeing = high confidence.
+    """
+    if actual_if is None and actual_tss is None:
+        # No physiological data to confirm against — name-only fuzzy is too risky
+        return None
+    
+    actual_type = classify_workout_type(actual_if, actual_duration)
+    
+    # Pull candidates with name similarity > threshold AND same workout type.
+    # Workout type filter is the most important guard — it eliminates entire
+    # wrong zones of the library before we score on IF/TSS.
+    candidates = db.query("""
+        SELECT *,
+               similarity(name_lower, %(name)s) AS name_sim
+        FROM tr_workout_library
+        WHERE similarity(name_lower, %(name)s) > 0.45
+          AND workout_type = %(wtype)s
+        ORDER BY name_sim DESC
+        LIMIT 10
+    """, {"name": name.lower().strip(), "wtype": actual_type})
+    
+    if not candidates:
+        # Relax: allow adjacent workout types (e.g. sweet_spot vs threshold)
+        adjacent = {
+            "vo2max": ["threshold"],
+            "threshold": ["sweet_spot", "vo2max"],
+            "sweet_spot": ["threshold", "tempo"],
+            "tempo": ["sweet_spot", "endurance"],
+            "endurance": ["tempo"],
+            "recovery": ["endurance"]
+        }
+        allowed_types = [actual_type] + adjacent.get(actual_type, [])
+        
+        candidates = db.query("""
+            SELECT *,
+                   similarity(name_lower, %(name)s) AS name_sim
+            FROM tr_workout_library
+            WHERE similarity(name_lower, %(name)s) > 0.45
+              AND workout_type = ANY(%(types)s)
+            ORDER BY name_sim DESC
+            LIMIT 10
+        """, {"name": name.lower().strip(), "types": allowed_types})
+    
+    if not candidates:
+        return None
+    
+    # Score each candidate across all available signals
+    scored = []
+    for c in candidates:
+        score = score_tr_candidate(c, name, actual_if, actual_tss, actual_duration)
+        if score["total"] >= 0.60 and score["hard_pass"] is False:
+            scored.append((score["total"], c, score))
+    
+    if not scored:
+        return None
+    
+    scored.sort(key=lambda x: x[0], reverse=True)
+    best_score, best_match, breakdown = scored[0]
+    
+    return {
+        **best_match,
+        "_match_score": round(best_score, 3),
+        "_match_breakdown": breakdown
+    }
+
+
+def score_tr_candidate(
+    candidate: dict,
+    name: str,
+    actual_if: float | None,
+    actual_tss: float | None,
+    actual_duration: float | None
+) -> dict:
+    """
+    Score a library candidate against the actual workout profile.
+    Returns a score dict with component scores and a hard_pass flag.
+    
+    hard_pass = True means this candidate should be rejected regardless of
+    name similarity — the physiological profile is too different to be the
+    same workout.
+    """
+    components = {}
+    hard_pass = False
+    
+    # ── Name similarity (0–1) ─────────────────────────────────────────────
+    from difflib import SequenceMatcher
+    name_sim = SequenceMatcher(None, name.lower(), candidate["name_lower"]).ratio()
+    components["name"] = name_sim
+    
+    # ── IF delta ─────────────────────────────────────────────────────────
+    lib_if = candidate.get("intensity_factor")
+    if actual_if and lib_if:
+        if_delta = abs(actual_if - lib_if)
+        if if_delta > 0.12:
+            hard_pass = True   # More than 12% IF difference = wrong workout type
+        elif if_delta <= 0.03:
+            components["if"] = 1.0
+        elif if_delta <= 0.06:
+            components["if"] = 0.7
+        else:
+            components["if"] = 0.3   # 0.06–0.12 — plausible but weak
+    
+    # ── TSS delta ────────────────────────────────────────────────────────
+    lib_tss = candidate.get("tss")
+    if actual_tss and lib_tss:
+        tss_pct_delta = abs(actual_tss - lib_tss) / lib_tss
+        if tss_pct_delta > 0.30:
+            hard_pass = True   # >30% TSS difference — fundamentally different session
+        elif tss_pct_delta <= 0.10:
+            components["tss"] = 1.0
+        elif tss_pct_delta <= 0.20:
+            components["tss"] = 0.6
+        else:
+            components["tss"] = 0.2
+    
+    # ── Duration delta ───────────────────────────────────────────────────
+    lib_duration = candidate.get("duration_min")
+    if actual_duration and lib_duration:
+        dur_delta = abs(actual_duration - lib_duration)
+        if dur_delta <= 5:
+            components["duration"] = 1.0
+        elif dur_delta <= 10:
+            components["duration"] = 0.7
+        elif dur_delta <= 20:
+            components["duration"] = 0.3
+        # No hard pass on duration — athletes modify session length
+    
+    # ── Workout type agreement ────────────────────────────────────────────
+    actual_type = classify_workout_type(actual_if, actual_duration)
+    if candidate.get("workout_type") == actual_type:
+        components["workout_type"] = 1.0
+    else:
+        components["workout_type"] = 0.3   # Adjacent type — tolerated but weighted down
+    
+    # ── Composite score ───────────────────────────────────────────────────
+    # Weights: physiological signals outweigh name similarity.
+    # A name match with wrong IF/TSS is a bad match.
+    # A physiological match with approximate name is fine.
+    weights = {
+        "workout_type": 0.30,   # Highest — eliminates entire wrong zones
+        "if":           0.25,   # Strong — IF defines the training stimulus
+        "tss":          0.20,   # Moderate — total load confirmation
+        "name":         0.15,   # Directional only — many similar TR names
+        "duration":     0.10    # Weakest — athletes modify durations
+    }
+    
+    total = sum(
+        components.get(k, 0.5) * w   # 0.5 default if signal not available
+        for k, w in weights.items()
+    )
+    
+    return {
+        "total": round(total, 3),
+        "components": components,
+        "hard_pass": hard_pass,
+        "actual_type": actual_type,
+        "lib_type": candidate.get("workout_type")
+    }
+
+
+def build_tr_library_with_types(export_dir: str) -> int:
+    """
+    Extended library build that also classifies and stores workout_type.
+    Replaces the original build_tr_library() — run this version.
+    """
+    count = 0
+    for f in Path(export_dir).glob("*.json"):
+        raw = json.loads(f.read_text())
+        lib_if = raw.get("If")
+        lib_duration = raw.get("Duration", 0) / 60
+        workout_type = classify_workout_type(lib_if, lib_duration)
+        
+        db.execute("""
+            INSERT INTO tr_workout_library
+                (tr_id, name, name_lower, description, duration_min,
+                 tss, intensity_factor, workout_type, structure)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (tr_id) DO UPDATE
+            SET name = EXCLUDED.name,
+                description = EXCLUDED.description,
+                intensity_factor = EXCLUDED.intensity_factor,
+                workout_type = EXCLUDED.workout_type,
+                structure = EXCLUDED.structure
+        """, (
+            raw["Id"], raw["Name"], raw["Name"].lower().strip(),
+            raw.get("Description", ""), lib_duration,
+            raw.get("Tss"), lib_if, workout_type,
+            json.dumps(parse_tr_intervals(raw.get("Intervals", [])))
+        ))
+        count += 1
+    
+    # Create trigram index if not exists — needed for similarity() queries
+    db.execute("CREATE INDEX IF NOT EXISTS tr_lib_name_trgm ON tr_workout_library USING gin(name_lower gin_trgm_ops)")
+    return count
+
+
+# ── Step 4: Wire into the activity ingestion pipeline ───────────────────────
+
+def enrich_activity_with_tr_plan(activity: dict) -> dict:
+    """
+    After a FIT file is ingested, try to attach the TR planned session.
+    If found, this becomes the 'planned' side of the plan/actual pair.
+    """
+    workout_name = extract_tr_workout_name(activity.get("fit_metadata", {}))
+    
+    if not workout_name:
+        return activity  # Not a TR workout or name not in FIT
+    
+    tr_workout = lookup_tr_workout(workout_name)
+    
+    if tr_workout:
+        activity["planned_session"] = {
             "source_platform": "trainerroad",
-            "sport": "bike",
-            "title": raw["Name"],
-            "coaching_text": raw.get("Description", ""),
-            "planned_duration_min": raw.get("Duration", 0) / 60,
-            "planned_tss": raw.get("Tss"),
-            "planned_if": raw.get("If"),
-            "structure": {
-                "warmup": extract_warmup(raw["Intervals"]),
-                "main_sets": extract_main_sets(raw["Intervals"]),
-                "cooldown": extract_cooldown(raw["Intervals"])
-            }
-        })
-    return workouts
+            "import_method": "fit_name_lookup",
+            "title": tr_workout["name"],
+            "coaching_text": tr_workout["description"],
+            "planned_duration_min": tr_workout["duration_min"],
+            "planned_tss": tr_workout["tss"],
+            "planned_if": tr_workout["intensity_factor"],
+            "structure": json.loads(tr_workout["structure"]) if tr_workout["structure"] else {}
+        }
+        activity["tr_match_method"] = tr_workout.get("_matched_as_fuzzy") and "fuzzy" or \
+                                       tr_workout.get("_matched_as_base") and "base" or "exact"
+    else:
+        # Log unmatched for review — build up the library over time
+        db.execute(
+            "INSERT INTO tr_unmatched_names (workout_name, activity_date, activity_id) "
+            "VALUES (%s, %s, %s) ON CONFLICT DO NOTHING",
+            (workout_name, activity["date"], activity["activity_id"])
+        )
+    
+    return activity
 ```
+
+### TrainingPeaks File Fallback
+
+When the TrainingPeaks API is unavailable or the OAuth approach breaks, the athlete exports their calendar manually. TrainingPeaks supports CSV export and individual workout file export.
+
+```python
+import csv
+from pathlib import Path
+
+TP_IMPORT_DIR = Path("/imports/trainingpeaks")
+
+def load_tp_calendar_csv(csv_path: Path) -> list:
+    """
+    Parse a TrainingPeaks calendar export CSV into unified planned_session schema.
+    TP CSV includes: date, title, duration, TSS, IF, description, sport type.
+    """
+    sessions = []
+    with open(csv_path) as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            sessions.append({
+                "session_id": generate_id(row["Date"] + row["Title"]),
+                "source_platform": "trainingpeaks",
+                "import_method": "file_watch",
+                "planned_date": parse_tp_date(row["Date"]),
+                "sport": map_tp_sport(row.get("Sport", "")),
+                "title": row.get("Title", ""),
+                "coaching_text": row.get("Description", ""),
+                "planned_duration_min": parse_duration(row.get("Duration")),
+                "planned_tss": float(row["TSS"]) if row.get("TSS") else None,
+                "planned_if": float(row["IF"]) if row.get("IF") else None,
+                "structure": {}   # CSV doesn't include interval structure
+            })
+    return sessions
+
+def scan_tp_import_folder() -> list:
+    """Watch for new TP exports and process them."""
+    new_files = get_unprocessed_files(TP_IMPORT_DIR, extensions=[".csv", ".json", ".xml"])
+    sessions = []
+    for f in new_files:
+        if f.suffix == ".csv":
+            sessions.extend(load_tp_calendar_csv(f))
+        elif f.suffix == ".json":
+            sessions.extend(load_tp_workout_json(f))
+        mark_processed(str(f))
+    return sessions
+```
+
+### Master Ingestion Router
+
+The daily pipeline calls this. It tries the API first and silently falls back to file-watch if the API is unavailable. The pipeline never stops because one API is broken.
+
+```python
+class GarminAPIUnavailable(Exception): pass
+class TrainingPeaksAPIUnavailable(Exception): pass
+
+def run_ingestion(athlete_id: str) -> dict:
+    """
+    Master ingestion router. API-first, file-watch fallback.
+    Returns summary of what was ingested and from which source.
+    """
+    summary = {"garmin_api": None, "tp_api": None, "file_imports": []}
+    
+    # ── Garmin completed activities ────────────────────────────────────────
+    try:
+        client = get_garmin_client(athlete["email"], athlete["password"])
+        garmindb_sync(client)
+        summary["garmin_api"] = "ok"
+    except GarminAPIUnavailable:
+        summary["garmin_api"] = "unavailable — using file-watch"
+    
+    # Always scan file-watch folder regardless of API status
+    # API and file-watch are additive — if both work, file-watch just finds nothing new
+    new_fit = scan_import_folder(Path(f"/imports/garmin/fit"))
+    if new_fit:
+        summary["file_imports"].append(f"garmin: {len(new_fit)} FIT files")
+    
+    # ── TrainingPeaks planned workouts ─────────────────────────────────────
+    try:
+        tp_sessions = fetch_tp_planned_workouts_api(athlete)
+        summary["tp_api"] = "ok"
+    except TrainingPeaksAPIUnavailable:
+        summary["tp_api"] = "unavailable — using file-watch"
+        tp_sessions = []
+    
+    tp_file_sessions = scan_tp_import_folder()
+    if tp_file_sessions:
+        summary["file_imports"].append(f"trainingpeaks: {len(tp_file_sessions)} sessions")
+    
+    # Merge and deduplicate — same session may arrive from both API and file
+    all_tp = deduplicate_planned_sessions(tp_sessions + tp_file_sessions)
+    store_planned_sessions(all_tp)
+    
+    # ── TrainerRoad ────────────────────────────────────────────────────────
+    # TR workout names come from FIT file metadata — no separate ingestion needed.
+    # enrich_activity_with_tr_plan() runs as part of activity ingestion above
+    # and looks up the name in the local tr_workout_library table.
+    # The library is built once via trainerroad-export and lives on disk.
+    summary["trainerroad"] = "name_lookup_from_fit"
+    
+    log_ingestion_summary(athlete_id, summary)
+    return summary
+```
+
+
+# Excel / Google Sheets spreadsheet plans also scan here:
+# scan_import_folder(Path("/imports/spreadsheets"), extensions=[".xlsx", ".csv"])
+
+---
+
+## Spreadsheet Plan Ingest
+
+Coach-authored training plans frequently live in Excel or Google Sheets — a grid of weeks, days, and sessions. The ingest layer accepts `.xlsx` and `.csv` drops and handles the most common layouts.
+
+> **Note on your specific spreadsheet:** Once you share the column/row layout of the "2025 Race Team: Winter/Spring Training" sheet, the column_map and layout detection can be tuned to match it exactly. The parser below handles the common cases and falls back to LLM parsing for non-standard formats.
+
+### Common Spreadsheet Layouts
+
+**Layout A — Weeks as rows, days as columns (most common)**
+```
+Week | Mon       | Tue        | Wed        | Thu        | Fri  | Sat             | Sun
+1    | Run 40min | Swim 2500m | Bike 60min | Run 6x800m | REST | Long ride 2.5hr | Long run 90min
+     | Easy Z2   | CSS sets   | Threshold  | @ 5k pace  |      | Z2+3x10min SS   |
+```
+
+**Layout B — Weeks as columns, sessions as rows**
+```
+Session    | Wk1        | Wk2         | Wk3
+Mon Run    | 40min easy | 45min easy  | 50min easy
+Tue Swim   | 2000m      | 2500m CSS   | 3000m threshold
+Wed Bike   | 60min Z2   | 75min SS    | 90min threshold
+```
+
+**Layout C — Flat list with date column**
+```
+Date       | Sport | Title         | Duration | Description
+2027-01-06 | Run   | Easy Z2       | 45min    | Keep HR below 140
+2027-01-07 | Swim  | CSS threshold | 60min    | 8x100 @ CSS 15s rest
+```
+
+### Core Parser
+
+```python
+import openpyxl
+import csv
+import re
+from pathlib import Path
+from datetime import date, timedelta
+
+SPREADSHEET_IMPORT_DIR = Path("/imports/spreadsheets")
+
+def ingest_spreadsheet_plan(
+    file_path: Path,
+    athlete_id: str,
+    plan_start_date: date,
+    column_map: dict = None
+) -> list[dict]:
+    """
+    Main entry point. Detects layout, parses sessions, stores to DB.
+    plan_start_date: Monday of Week 1 (required for Layout A/B where dates are implied).
+    column_map: optional override for non-standard column names.
+                e.g. {"sport": "Activity", "description": "Coach Notes"}
+    """
+    if file_path.suffix in (".xlsx", ".xlsm"):
+        rows, headers = load_xlsx(file_path)
+    elif file_path.suffix == ".csv":
+        rows, headers = load_csv(file_path)
+    else:
+        raise ValueError(f"Unsupported: {file_path.suffix}")
+
+    layout = detect_layout(headers, rows)
+
+    if layout == "A":
+        sessions = parse_layout_a(rows, headers, plan_start_date)
+    elif layout == "B":
+        sessions = parse_layout_b(rows, headers, plan_start_date)
+    elif layout == "C":
+        sessions = parse_layout_c(rows, headers, column_map)
+    else:
+        sessions = llm_parse_spreadsheet(rows, headers, plan_start_date)
+
+    normalised = [normalise_spreadsheet_session(s, athlete_id) for s in sessions]
+    store_planned_sessions(normalised)
+    mark_processed(str(file_path))
+    return normalised
+
+
+def load_xlsx(path: Path) -> tuple[list, list]:
+    """Load all sheets or the first non-empty sheet. Returns (rows, headers)."""
+    wb = openpyxl.load_workbook(path, data_only=True)
+    all_sessions = []
+    headers = []
+    
+    for sheet_name in wb.sheetnames:
+        ws = wb[sheet_name]
+        sheet_rows = [[cell.value for cell in row] for row in ws.iter_rows()]
+        # Skip completely empty sheets
+        if not any(any(c for c in r) for r in sheet_rows):
+            continue
+        # First non-empty row is the header
+        for i, row in enumerate(sheet_rows):
+            if any(c for c in row):
+                if not headers:
+                    headers = [str(c) if c else "" for c in row]
+                    all_sessions.extend(sheet_rows[i+1:])
+                else:
+                    # Multi-sheet: each sheet may be a different week or sport
+                    # Treat first row of subsequent sheets as a section label, not header
+                    all_sessions.extend(sheet_rows[i:])
+                break
+    
+    return all_sessions, headers
+
+
+def detect_layout(headers: list[str], rows: list[list]) -> str:
+    """Sniff layout from header row shape."""
+    h = [str(x).lower().strip() for x in headers if x]
+    DAY_NAMES = {"mon","tue","wed","thu","fri","sat","sun",
+                 "monday","tuesday","wednesday","thursday","friday","saturday","sunday"}
+    
+    if len(DAY_NAMES & set(h)) >= 4:
+        return "A"
+    if "date" in h and any(x in h for x in ("sport","activity","type","discipline")):
+        return "C"
+    week_in_header = any("wk" in x or "week" in x for x in h)
+    first_col = [str(r[0]).lower() for r in rows[:8] if r and r[0]]
+    sport_in_first_col = any(
+        any(s in v for s in ("run","swim","bike","ride","strength"))
+        for v in first_col
+    )
+    if week_in_header and sport_in_first_col:
+        return "B"
+    return "unknown"
+
+
+DAY_OFFSETS = {
+    "mon":0,"monday":0,"tue":1,"tuesday":1,"wed":2,"wednesday":2,
+    "thu":3,"thursday":3,"fri":4,"friday":4,"sat":5,"saturday":5,"sun":6,"sunday":6
+}
+
+def parse_layout_a(rows, headers, plan_start: date) -> list[dict]:
+    """Weeks as rows, days as columns."""
+    sessions = []
+    day_cols = {i: DAY_OFFSETS[str(h).lower().strip()]
+                for i, h in enumerate(headers)
+                if str(h).lower().strip() in DAY_OFFSETS}
+
+    week_num = 0
+    for row in rows:
+        if not any(str(c).strip() for c in row if c is not None):
+            continue
+        first = str(row[0] or "").strip().lower()
+        wk_match = re.search(r"\d+", first)
+        if wk_match and any(kw in first for kw in ("week","wk","")):
+            week_num = int(wk_match.group())
+        else:
+            week_num += 1
+
+        week_start = plan_start + timedelta(weeks=week_num - 1)
+
+        for col_idx, day_offset in day_cols.items():
+            if col_idx >= len(row):
+                continue
+            cell = str(row[col_idx] or "").strip()
+            if not cell or cell.lower() in ("rest","off","-",""):
+                continue
+            session_date = week_start + timedelta(days=day_offset)
+            s = parse_cell_to_session(cell, session_date)
+            if s:
+                sessions.append(s)
+    return sessions
+
+
+def parse_layout_c(rows, headers, column_map: dict = None) -> list[dict]:
+    """Flat list with explicit date column."""
+    ALIASES = {
+        "date":     ["date","day"],
+        "sport":    ["sport","activity","type","discipline"],
+        "title":    ["title","name","workout","session"],
+        "duration": ["duration","time","length"],
+        "description": ["description","notes","details","desc","coach notes"],
+        "tss":      ["tss","training stress"],
+        "planned_if": ["if","intensity factor"],
+    }
+    col_idx = {}
+    for i, h in enumerate(headers):
+        key = str(h or "").lower().strip()
+        for canonical, aliases in ALIASES.items():
+            if key in aliases:
+                col_idx[canonical] = i
+
+    sessions = []
+    for row in rows:
+        if not any(str(c or "").strip() for c in row):
+            continue
+        def get(field):
+            i = col_idx.get(field)
+            return str(row[i] or "").strip() if i is not None and i < len(row) else ""
+
+        raw_date = get("date")
+        if not raw_date:
+            continue
+        try:
+            from dateutil import parser as dp
+            session_date = dp.parse(raw_date).date()
+        except Exception:
+            continue
+
+        desc = get("description")
+        sport = infer_sport(get("sport"), desc)
+        sessions.append({
+            "planned_date": session_date.isoformat(),
+            "sport": sport,
+            "title": get("title") or f"{sport.title()} session",
+            "coaching_text": desc,
+            "planned_duration_min": parse_duration_str(get("duration")),
+            "planned_tss": float(get("tss")) if get("tss") else None,
+            "planned_if": float(get("planned_if")) if get("planned_if") else None,
+        })
+    return sessions
+
+
+def parse_cell_to_session(cell_text: str, session_date: date) -> dict | None:
+    """Parse a spreadsheet cell (possibly multi-line) into a session dict."""
+    lines = [l.strip() for l in cell_text.strip().splitlines() if l.strip()]
+    if not lines:
+        return None
+    primary = lines[0]
+    detail_lines = lines[1:]
+    sport = infer_sport_from_text(primary)
+    structure = parse_workout_notation(detail_lines, sport)
+    return {
+        "planned_date": session_date.isoformat(),
+        "sport": sport,
+        "title": clean_session_title(primary),
+        "coaching_text": "\n".join(detail_lines),
+        "planned_duration_min": extract_duration(primary),
+        "planned_distance_m": extract_distance(primary),
+        "structure": structure,
+    }
+
+
+def infer_sport_from_text(text: str) -> str:
+    t = text.lower()
+    if any(w in t for w in ("swim","pool","open water","css","100m","200m","400m")):
+        return "swim"
+    if any(w in t for w in ("bike","ride","cycling","zwift","ftp","watts")):
+        return "bike"
+    if any(w in t for w in ("run","jog","marathon","tempo","intervals","800m","5k","10k")):
+        return "run"
+    if any(w in t for w in ("strength","gym","weights","lift")):
+        return "strength"
+    if any(w in t for w in ("yoga","stretch","mobility","foam roll")):
+        return "mobility"
+    return "other"
+
+
+def extract_duration(text: str) -> float | None:
+    t = text.lower()
+    for pattern, fn in [
+        (r"(\d+)\s*hr?\s*(\d+)\s*min", lambda m: int(m.group(1))*60+int(m.group(2))),
+        (r"(\d+\.?\d*)\s*hr?s?",        lambda m: float(m.group(1))*60),
+        (r"(\d+):(\d+)",                 lambda m: int(m.group(1))*60+int(m.group(2))),
+        (r"(\d+)\s*min",                 lambda m: float(m.group(1))),
+    ]:
+        m = re.search(pattern, t)
+        if m:
+            return fn(m)
+    return None
+
+
+def extract_distance(text: str) -> float | None:
+    t = text.lower()
+    for pattern, fn in [
+        (r"(\d+\.?\d*)\s*km", lambda m: float(m.group(1))*1000),
+        (r"(\d+\.?\d*)\s*k\b", lambda m: float(m.group(1))*1000),
+        (r"(\d+)\s*m\b", lambda m: float(m.group(1))),
+    ]:
+        m = re.search(pattern, t)
+        if m:
+            return fn(m)
+    return None
+
+
+def parse_workout_notation(lines: list[str], sport: str) -> dict:
+    if sport == "swim":
+        return parse_swim_notation(lines)
+    elif sport == "run":
+        return parse_run_notation(lines)
+    elif sport == "bike":
+        return parse_bike_notation(lines)
+    return {"main_sets": [], "raw_text": "\n".join(lines)}
+
+
+def llm_parse_spreadsheet(rows, headers, plan_start: date) -> list[dict]:
+    """Last resort — LLM parses non-standard layouts. Called once, result cached."""
+    sample_text = "\n".join(
+        " | ".join(str(c or "") for c in row)
+        for row in [headers] + rows[:25]
+    )
+    prompt = f"""Extract all planned workout sessions from this training plan spreadsheet.
+Plan starts week of {plan_start.isoformat()}.
+Return JSON array only. Each item: {{
+  "planned_date": "YYYY-MM-DD",
+  "sport": "swim|bike|run|strength|mobility|other",
+  "title": "short title",
+  "coaching_text": "full description as written",
+  "planned_duration_min": number_or_null,
+  "planned_distance_m": number_or_null
+}}
+
+Spreadsheet:
+{sample_text}"""
+    response = llm_client.generate(prompt, expect_json=True)
+    return json.loads(response)
+
+
+def normalise_spreadsheet_session(raw: dict, athlete_id: str) -> dict:
+    return {
+        "session_id": generate_stable_id(athlete_id, raw["planned_date"], raw["sport"]),
+        "source_platform": "spreadsheet",
+        "import_method": "file_ingest",
+        "athlete_id": athlete_id,
+        "planned_date": raw["planned_date"],
+        "sport": raw.get("sport", "other"),
+        "title": raw.get("title", ""),
+        "coaching_text": raw.get("coaching_text", raw.get("description", "")),
+        "planned_duration_min": raw.get("planned_duration_min"),
+        "planned_distance_m": raw.get("planned_distance_m"),
+        "planned_tss": raw.get("planned_tss"),
+        "planned_if": raw.get("planned_if"),
+        "structure": raw.get("structure", {}),
+        "imported_at": datetime.utcnow().isoformat()
+    }
+```
+
+---
+
+## MCR / Coach Plan Layout Parser (Layout D)
+
+This layout is specific to coach-authored multi-group training plans in the format seen in the MCR Spring Training spreadsheet. It differs from the generic layouts because:
+
+- **Multiple athlete groups** live in parallel columns (e.g. `GB 13.1 <25`, `GB 13.1 26-40`, `41-60`, `60+`)
+- **Multiple tabs** represent different goal races (GB 13.1 = half marathon, BK 5k = 5k)
+- **3–4 session rows per week** with the session type in a Key Weekly Components column
+- **Session day is implied** from the row label ("Mon Optional" → Monday, "Weds Workout" → Wednesday, "Long Run" → Saturday)
+- **Workout descriptions** use running-specific shorthand: ladders (`5-4-3-2-1min`), cruise LRs (`CRUISE LR: X Miles`), complex sets (`4-5min@TP, 3x200h@8K`)
+- **Weekly % column** gives intended training intensity load
+
+The plan is ingested once per group — the athlete's ability group is selected at import time (or configured in their profile), and only that column is extracted.
+
+```python
+# ── MCR-style layout detection ───────────────────────────────────────────────
+
+def is_mcr_layout(headers: list[str], rows: list[list]) -> bool:
+    """
+    Detect the MCR/coach multi-group layout.
+    Signals:
+    - Header row contains 'Key Weekly Components' or similar
+    - 4 group columns with patterns like '<25', '26-40', '41-60', '60+'
+      OR group names like 'Group A', 'Beginner', etc.
+    - First data column contains 'Week' label
+    """
+    h = [str(x or "").lower() for x in headers]
+    has_key_components = any("key" in x and "component" in x for x in h)
+    has_group_cols = sum(
+        1 for x in h
+        if re.search(r"<\d+|\d+-\d+|\d+\+|group [a-z]|beginner|intermediate|advanced", x)
+    ) >= 2
+    return has_key_components or has_group_cols
+
+
+def parse_mcr_layout(
+    workbook_path: str,
+    athlete_group: str,         # e.g. "GB 13.1 26-40" — which column to extract
+    athlete_id: str,
+    plan_start_date: date = None  # if None, read from sheet dates
+) -> list[dict]:
+    """
+    Parse an MCR-style multi-group coach plan.
+    
+    athlete_group: the column header of this athlete's ability group.
+                   Stored in athlete profile — selected once at plan import.
+    """
+    import openpyxl
+    wb = openpyxl.load_workbook(workbook_path, data_only=True)
+    all_sessions = []
+    
+    for sheet_name in wb.sheetnames:
+        ws = wb[sheet_name]
+        all_rows = [[cell.value for cell in row] for row in ws.iter_rows()]
+        
+        # Find header row — the row containing the group column names
+        header_row_idx, headers = find_mcr_header_row(all_rows)
+        if header_row_idx is None:
+            continue
+        
+        # Find which column index corresponds to this athlete's group
+        group_col_idx = find_group_column(headers, athlete_group)
+        if group_col_idx is None:
+            # This tab doesn't have this athlete's group — skip
+            continue
+        
+        # Also capture column indices for context fields
+        col = build_mcr_column_map(headers)
+        
+        # Parse goal race from sheet name or title row
+        goal_race = infer_goal_race_from_sheet(sheet_name, all_rows[:3])
+        
+        # Parse weeks
+        data_rows = all_rows[header_row_idx + 1:]
+        sessions = parse_mcr_weeks(
+            data_rows, col, group_col_idx, goal_race,
+            athlete_id, plan_start_date
+        )
+        all_sessions.extend(sessions)
+    
+    return all_sessions
+
+
+def find_mcr_header_row(all_rows: list) -> tuple[int | None, list]:
+    """Find the row index containing group column headers."""
+    for i, row in enumerate(all_rows):
+        row_text = [str(c or "").lower().strip() for c in row]
+        # Header row has 'week', 'date', and at least 2 group-like columns
+        has_week = any("week" in t for t in row_text)
+        has_date = any("date" in t or "mon" in t for t in row_text)
+        group_count = sum(
+            1 for t in row_text
+            if re.search(r"<\d+|\d+-\d+|\d+\+|group [a-z]|bk\s*\d|gb\s*\d", t)
+        )
+        if has_week and has_date and group_count >= 2:
+            return i, [str(c or "") for c in row]
+    return None, []
+
+
+def find_group_column(headers: list[str], athlete_group: str) -> int | None:
+    """Find column index for the athlete's group, with fuzzy matching."""
+    target = athlete_group.lower().strip()
+    for i, h in enumerate(headers):
+        if h.lower().strip() == target:
+            return i
+    # Fuzzy: strip spaces, compare
+    for i, h in enumerate(headers):
+        if target.replace(" ", "") == h.lower().strip().replace(" ", ""):
+            return i
+    return None
+
+
+def build_mcr_column_map(headers: list[str]) -> dict:
+    """Map semantic field names to column indices."""
+    col = {}
+    for i, h in enumerate(headers):
+        hl = h.lower().strip()
+        if "week" in hl and len(hl) < 8:
+            col["week"] = i
+        elif "date" in hl or "mon start" in hl:
+            col["date"] = i
+        elif "key" in hl and "component" in hl:
+            col["session_type"] = i
+        elif "weekly" in hl and "%" in hl:
+            col["weekly_pct"] = i
+        elif "race" in hl or "track" in hl:
+            col["race_notes"] = i
+    return col
+
+
+def infer_goal_race_from_sheet(sheet_name: str, title_rows: list) -> str:
+    """Extract the goal race type from sheet name or title rows."""
+    text = sheet_name.lower() + " ".join(
+        str(c or "").lower() for row in title_rows for c in row
+    )
+    if "ironman" in text or "im " in text:      return "ironman"
+    if "70.3" in text or "half iron" in text:   return "70.3"
+    if "13.1" in text or "half mar" in text:    return "half_marathon"
+    if "marathon" in text:                       return "marathon"
+    if "5k" in text:                             return "5k"
+    if "10k" in text:                            return "10k"
+    if "triathlon" in text or "tri" in text:     return "triathlon"
+    return "running"
+
+
+# ── Day mapping from MCR row labels ──────────────────────────────────────────
+
+MCR_DAY_MAP = {
+    "mon optional":  (0, True),    # Monday, optional
+    "mon":           (0, False),
+    "weds workout":  (2, False),   # Wednesday
+    "weds":          (2, False),
+    "wednesday":     (2, False),
+    "long run":      (5, False),   # Saturday
+    "lr":            (5, False),
+    "sat":           (5, False),
+    "pace work":     (4, False),   # Friday or wherever fits — context-dependent
+    "tues":          (1, False),
+    "thurs":         (3, False),
+    "sun":           (6, False),
+}
+
+def map_session_day(row_label: str) -> tuple[int, bool]:
+    """
+    Map a Key Weekly Components label to (day_offset_from_monday, is_optional).
+    day_offset: 0=Mon, 1=Tue, 2=Wed, 3=Thu, 4=Fri, 5=Sat, 6=Sun
+    """
+    label = row_label.lower().strip()
+    for key, value in MCR_DAY_MAP.items():
+        if key in label:
+            return value
+    return (2, False)  # default to Wednesday if unknown
+
+
+def parse_mcr_weeks(
+    data_rows: list,
+    col: dict,
+    group_col_idx: int,
+    goal_race: str,
+    athlete_id: str,
+    plan_start_date: date | None
+) -> list[dict]:
+    """
+    Parse week/session rows from an MCR-layout plan.
+    Each week has 3-4 rows; week number and date come from col A/B/C.
+    """
+    sessions = []
+    current_week_num = None
+    current_week_date = None
+    current_mesocycle = None
+    current_weekly_pct = None
+
+    for row in data_rows:
+        if not any(c for c in row if c is not None):
+            continue  # skip blank rows
+
+        # Detect mesocycle label (merged cell spanning multiple weeks)
+        # Typically in column A or B, text like "1st Mesocycle", "2nd Mesocycle"
+        row_a = str(row[0] or "").strip()
+        if "mesocycle" in row_a.lower() or "macrocycle" in row_a.lower():
+            current_mesocycle = row_a
+            continue
+
+        # Detect week number from col B
+        week_val = str(row[col.get("week", 1)] or "").strip()
+        if week_val.isdigit():
+            current_week_num = int(week_val)
+
+        # Detect week start date from col C
+        date_val = row[col.get("date", 2)]
+        if date_val:
+            try:
+                if isinstance(date_val, (datetime, date)):
+                    current_week_date = date_val if isinstance(date_val, date) else date_val.date()
+                else:
+                    from dateutil import parser as dp
+                    current_week_date = dp.parse(str(date_val)).date()
+            except Exception:
+                pass
+
+        # Get session type / row label from Key Weekly Components column
+        session_type_raw = str(row[col.get("session_type", 3)] or "").strip()
+        if not session_type_raw:
+            continue
+
+        # Get weekly intensity %
+        pct_val = row[col.get("weekly_pct", -1)] if "weekly_pct" in col else None
+        if pct_val and str(pct_val).strip().rstrip("%").isdigit():
+            current_weekly_pct = int(str(pct_val).strip().rstrip("%"))
+
+        # Get this athlete's workout text
+        if group_col_idx >= len(row):
+            continue
+        workout_text = str(row[group_col_idx] or "").strip()
+
+        # Skip N/A and blank sessions
+        if not workout_text or workout_text.upper() in ("N/A", "NA", "-", "REST", "OFF"):
+            continue
+
+        # Resolve session date
+        if current_week_date:
+            day_offset, is_optional = map_session_day(session_type_raw)
+            session_date = current_week_date + timedelta(days=day_offset)
+        else:
+            session_date = plan_start_date + timedelta(weeks=(current_week_num or 1) - 1)
+
+        session = parse_mcr_workout_text(
+            workout_text=workout_text,
+            session_type_label=session_type_raw,
+            session_date=session_date,
+            goal_race=goal_race,
+            week_num=current_week_num,
+            mesocycle=current_mesocycle,
+            weekly_pct=current_weekly_pct,
+            is_optional=(session_type_raw.lower().startswith("mon optional"))
+        )
+        sessions.append(session)
+
+    return sessions
+
+
+def parse_mcr_workout_text(
+    workout_text: str,
+    session_type_label: str,
+    session_date: date,
+    goal_race: str,
+    week_num: int | None,
+    mesocycle: str | None,
+    weekly_pct: int | None,
+    is_optional: bool
+) -> dict:
+    """
+    Parse an MCR workout cell into a planned session dict.
+    Handles MCR-specific notation conventions.
+    """
+    lines = [l.strip() for l in workout_text.strip().splitlines() if l.strip()]
+    primary = lines[0] if lines else workout_text
+    detail_lines = lines[1:]
+
+    # Determine sport from session type label
+    sport = infer_sport_from_mcr_label(session_type_label, primary)
+
+    # Parse distance from LR lines: "LR: 7-9 Miles" → use midpoint
+    distance_m = extract_mcr_distance(primary)
+    duration_min = extract_duration(primary)
+
+    # Parse specific MCR workout patterns
+    structure = parse_mcr_notation(lines, sport, goal_race)
+
+    return {
+        "planned_date": session_date.isoformat(),
+        "sport": sport,
+        "title": build_mcr_title(session_type_label, primary),
+        "coaching_text": workout_text,
+        "planned_duration_min": duration_min,
+        "planned_distance_m": distance_m,
+        "structure": structure,
+        "meta": {
+            "week": week_num,
+            "mesocycle": mesocycle,
+            "weekly_intensity_pct": weekly_pct,
+            "is_optional": is_optional,
+            "session_type": session_type_label,
+            "goal_race": goal_race,
+        }
+    }
+
+
+def infer_sport_from_mcr_label(label: str, text: str) -> str:
+    """MCR plans are run-focused but may include cross-training."""
+    label_lower = label.lower()
+    text_lower = text.lower()
+    # All sessions in MCR plans are running unless explicitly stated
+    if any(w in label_lower + text_lower for w in ("swim", "pool", "css")):
+        return "swim"
+    if any(w in label_lower + text_lower for w in ("bike", "ride", "cycle", "zwift")):
+        return "bike"
+    if any(w in label_lower + text_lower for w in ("strength", "gym", "weights")):
+        return "strength"
+    if any(w in label_lower + text_lower for w in ("yoga", "stretch", "mobility")):
+        return "mobility"
+    return "run"
+
+
+def extract_mcr_distance(text: str) -> float | None:
+    """
+    Extract distance from MCR notation.
+    "LR: 7-9 Miles" → midpoint 8 miles → 12875m
+    "LR: 8 Miles" → 8 miles → 12875m
+    "5-6 Miles" → midpoint 5.5 miles
+    """
+    t = text.lower()
+    # Range: 7-9 miles or 7-9 Miles
+    m = re.search(r"(\d+\.?\d*)\s*[-–]\s*(\d+\.?\d*)\s*(mile|km|k\b)", t)
+    if m:
+        low, high = float(m.group(1)), float(m.group(2))
+        mid = (low + high) / 2
+        mult = 1000 if "km" in m.group(3) or m.group(3) == "k" else 1609
+        return round(mid * mult)
+    # Single: 8 miles
+    m = re.search(r"(\d+\.?\d*)\s*(mile|km|k\b)", t)
+    if m:
+        mult = 1000 if "km" in m.group(2) or m.group(2) == "k" else 1609
+        return round(float(m.group(1)) * mult)
+    # Metres
+    m = re.search(r"(\d+)\s*m\b", t)
+    if m:
+        return int(m.group(1))
+    return None
+
+
+def build_mcr_title(session_type: str, primary_line: str) -> str:
+    """Build a readable session title from the session type label and first text line."""
+    session_type = session_type.strip()
+    # Clean up primary line — strip LR: prefix, etc.
+    clean_primary = re.sub(r"^(lr|long run|wu|cd)\s*:\s*", "", primary_line.strip(),
+                           flags=re.IGNORECASE).strip()
+    if clean_primary and clean_primary.lower() not in session_type.lower():
+        return f"{session_type} — {clean_primary}"
+    return session_type
+
+
+def parse_mcr_notation(lines: list[str], sport: str, goal_race: str) -> dict:
+    """
+    Parse MCR-specific workout notation into structured sets.
+    Handles all the patterns visible in the MCR Spring Training plan.
+    """
+    all_text = " ".join(lines).lower()
+    warmup, main_sets, cooldown = [], [], []
+    current_section = "main"
+
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        ll = line.lower()
+
+        # Section detection
+        if ll.startswith("wu") or "warm" in ll[:6]:
+            current_section = "warmup"
+        elif ll.startswith("cd") or "cool" in ll[:6]:
+            current_section = "cooldown"
+        elif any(ll.startswith(x) for x in ("lr:", "long run", "cruise lr")):
+            current_section = "main"
+
+        parsed = parse_mcr_line(line, goal_race)
+
+        if current_section == "warmup":
+            warmup.append(parsed)
+        elif current_section == "cooldown":
+            cooldown.append(parsed)
+        else:
+            main_sets.append(parsed)
+
+    return {"warmup": warmup, "main_sets": main_sets, "cooldown": cooldown}
+
+
+def parse_mcr_line(line: str, goal_race: str) -> dict:
+    """
+    Parse a single MCR notation line.
+    
+    Handles patterns specific to this plan:
+      "5-4-3-2-1min Tempo"              → descending ladder
+      "Rest = half the next rep"         → rest descriptor
+      "3x200"                            → straight repeats
+      "4-5min@TP, 3x200h@8K, 4-5min@TP" → compound set
+      "CRUISE LR: 8 Miles"               → cruise long run
+      "LR: 7-9 Miles"                    → standard long run
+      "first 20min easy"                 → paced block
+      "middle 30min @ MP+45s"            → paced block with offset
+      "cool down to 8-10 miles total"    → finish instruction
+      "1600-2200m of hills, 7-9 reps"   → hill repeat volume
+    """
+    line = line.strip()
+    ll = line.lower()
+
+    # Descending/ascending ladder: "5-4-3-2-1min Tempo"
+    ladder = re.match(r"([\d]+-[\d-]+min)\s+(.*)", line, re.IGNORECASE)
+    if ladder and re.match(r"\d+(-\d+)+", ladder.group(1)):
+        steps_raw = ladder.group(1)
+        target_raw = ladder.group(2)
+        durations = [int(x) for x in re.findall(r"\d+", steps_raw)]
+        return {
+            "type": "ladder",
+            "steps_min": durations,
+            "target": parse_run_target(target_raw),
+            "raw": line
+        }
+
+    # Compound set: "4-5min@TP, 3x200h@8K, 4-5min@TP"
+    if "," in line and "@" in line:
+        parts = [p.strip() for p in line.split(",")]
+        compound = []
+        for part in parts:
+            compound.append(parse_mcr_line(part, goal_race))
+        if len(compound) > 1:
+            return {"type": "compound", "sets": compound, "raw": line}
+
+    # Range interval: "4-5min@TP" or "4-6min@TP"
+    range_interval = re.match(r"(\d+)\s*[-–]\s*(\d+)\s*min\s*@?\s*(.*)", line, re.IGNORECASE)
+    if range_interval:
+        return {
+            "type": "range_interval",
+            "min_min": int(range_interval.group(1)),
+            "max_min": int(range_interval.group(2)),
+            "target": parse_run_target(range_interval.group(3)),
+            "raw": line
+        }
+
+    # Hill notation: "1600-2200 meters of hills, 7-9 reps"
+    hill = re.search(r"(\d+)[–-](\d+)\s*m.*hill", ll)
+    if hill:
+        return {
+            "type": "hills",
+            "min_distance_m": int(hill.group(1)),
+            "max_distance_m": int(hill.group(2)),
+            "raw": line
+        }
+
+    # Repeats with suffix codes: "3x200h@8K" (h=hills), "3x200@TP"
+    repeat = re.match(r"(\d+)\s*[x×]\s*(\d+)\s*(h?)\s*@?\s*(.*)", line, re.IGNORECASE)
+    if repeat:
+        is_hill = repeat.group(3).lower() == "h"
+        return {
+            "type": "hills_repeat" if is_hill else "interval",
+            "repeat": int(repeat.group(1)),
+            "distance_m": int(repeat.group(2)),
+            "target": parse_run_target(repeat.group(4)),
+            "is_hill": is_hill,
+            "raw": line
+        }
+
+    # Paced block: "middle 30min @ MP+45s", "first 20min easy"
+    paced_block = re.match(
+        r"(first|middle|last|final|next)?\s*(\d+\.?\d*)\s*(min|mile|km)\s*@?\s*(.*)",
+        line, re.IGNORECASE
+    )
+    if paced_block:
+        return {
+            "type": "paced_block",
+            "position": paced_block.group(1) or "main",
+            "duration_min": float(paced_block.group(2)) if "min" in paced_block.group(3).lower() else None,
+            "distance_m": (float(paced_block.group(2)) * 1609
+                           if "mile" in paced_block.group(3).lower() else
+                           float(paced_block.group(2)) * 1000
+                           if "km" in paced_block.group(3).lower() else None),
+            "target": parse_run_target(paced_block.group(4)),
+            "raw": line
+        }
+
+    # LR / Cruise LR
+    if ll.startswith("lr:") or ll.startswith("long run") or ll.startswith("cruise lr"):
+        is_cruise = "cruise" in ll
+        dist = extract_mcr_distance(line)
+        return {
+            "type": "cruise_long_run" if is_cruise else "long_run",
+            "distance_m": dist,
+            "raw": line
+        }
+
+    # Rest descriptor: "Rest = half the next rep", "2 min active rest btw all"
+    if "rest" in ll or "recovery" in ll or "btw" in ll:
+        return {"type": "rest_descriptor", "raw": line}
+
+    # Fallthrough
+    return {"type": "raw", "raw": line}
+
+
+# ── MCR pace/target references ─────────────────────────────────────────────
+
+MCR_TARGET_MAP = {
+    # MCR uses these abbreviations extensively
+    "tp":   {"type": "threshold_pace"},          # Threshold Pace
+    "mp":   {"type": "marathon_pace"},            # Marathon Pace
+    "hmp":  {"type": "race_pace", "distance": "half_marathon"},
+    "8k":   {"type": "race_pace", "distance": "8k"},
+    "5k":   {"type": "race_pace", "distance": "5k"},
+    "10k":  {"type": "race_pace", "distance": "10k"},
+    "goal": {"type": "goal_race_pace"},
+    "gp":   {"type": "goal_race_pace"},
+    "easy": {"type": "zone", "zone": 2},
+    "z2":   {"type": "zone", "zone": 2},
+    "z3":   {"type": "zone", "zone": 3},
+    "z4":   {"type": "zone", "zone": 4},
+}
+
+def parse_run_target(text: str) -> dict:
+    """Extended run target parser that includes MCR abbreviations."""
+    if not text: return {"type": "none"}
+    t = text.strip().lower()
+
+    # MP offset: MP+45s, MP-30s (marathon pace ± seconds)
+    mp_offset = re.match(r"mp\s*([+-]\s*\d+)\s*s?", t)
+    if mp_offset:
+        offset_str = mp_offset.group(1).replace(" ", "")
+        return {"type": "marathon_pace_offset",
+                "offset_sec_per_mile": int(offset_str)}
+
+    # MCR abbreviations
+    for abbrev, result in MCR_TARGET_MAP.items():
+        if t == abbrev or t.startswith(abbrev + " ") or t.startswith(abbrev + "/"):
+            return result
+
+    # Zone
+    m = re.search(r"z(?:one\s*)?(\d)", t)
+    if m: return {"type": "zone", "zone": int(m.group(1))}
+
+    # HR ceiling
+    m = re.search(r"hr\s*[<≤]\s*(\d+)|[<≤]\s*(\d{3})\s*bpm?", t)
+    if m: return {"type": "hr_ceiling", "hr_max": int(m.group(1) or m.group(2))}
+
+    # Absolute pace: 7:30/mile, 4:30/km
+    m = re.match(r"(\d+):(\d+)\s*(?:/\s*(?:mile|km|m))?", t)
+    if m: return {"type": "absolute_pace",
+                  "sec": int(m.group(1))*60+int(m.group(2))}
+
+    return {"type": "raw", "raw": text}
+```
+
+### Wiring MCR Import into the Master Ingestion Router
+
+```python
+# Add to run_ingestion() in the master router:
+
+def scan_spreadsheet_imports(athlete_id: str, athlete_group: str) -> list[dict]:
+    """
+    Scan the spreadsheet import folder and process any new files.
+    Detects MCR layout automatically.
+    """
+    sessions = []
+    for f in Path(SPREADSHEET_IMPORT_DIR).glob("*.xlsx"):
+        if str(f) in get_processed_files():
+            continue
+        
+        wb = openpyxl.load_workbook(str(f), data_only=True)
+        first_sheet = wb[wb.sheetnames[0]]
+        sample_rows = [[c.value for c in row] for row in first_sheet.iter_rows(max_row=5)]
+        
+        if is_mcr_layout([str(c or "") for c in sample_rows[1]], sample_rows):
+            # MCR multi-group layout — use group-aware parser
+            sessions.extend(
+                parse_mcr_layout(str(f), athlete_group, athlete_id)
+            )
+        else:
+            # Fall back to generic parser
+            sessions.extend(
+                ingest_spreadsheet_plan(f, athlete_id, plan_start_date=None)
+            )
+    
+    return sessions
+```
+
+### Athlete Profile — Group Selection
+
+The athlete's group column is stored in their profile so it's applied automatically on every import:
+
+```python
+athlete_profile = {
+    # ... other fields ...
+    "spreadsheet_group": "GB 13.1 26-40",  # set once at profile creation
+    # Maps to the column header in their coach's plan spreadsheet
+    # Examples: "BK 5k <25", "GB 13.1 60+", "Group B", "Intermediate"
+}
+```
+
+
+
+---
+
+## Swim & Run Workout Notation Parser
+
+Coach spreadsheets use sport-specific shorthand. This parser handles the common notations for swim and run sessions.
+
+### Swim Notation
+
+```python
+# Common swim notation:
+#   "400m warmup easy"
+#   "8x100 @ CSS / 20s rest"
+#   "8x100 @ CSS+5 / 20s"       ← CSS+5 = 5sec/100m slower than CSS
+#   "4x200 descend 1-4"          ← each rep faster
+#   "3x(4x50 @ Z4/10s) / 2min"  ← nested sets
+#   "800m pull buoy"
+#   "400m kick"
+
+def parse_swim_notation(lines: list[str]) -> dict:
+    warmup, main_sets, cooldown = [], [], []
+    current = "main"
+    for line in lines:
+        line = line.strip()
+        if not line: continue
+        ll = line.lower()
+        if any(w in ll for w in ("warm","wu","w/u")): current = "warmup"
+        elif any(w in ll for w in ("cool","cd","c/d","easy down")): current = "cooldown"
+        elif any(w in ll for w in ("main set","ms:")): current = "main"
+        parsed = parse_swim_line(line)
+        (warmup if current == "warmup" else cooldown if current == "cooldown" else main_sets).append(parsed)
+    return {"warmup": warmup, "main_sets": main_sets, "cooldown": cooldown}
+
+
+def parse_swim_line(line: str) -> dict:
+    line = line.strip()
+
+    # Nested: 3x(4x50 @ Z4/10s) / 2min
+    nested = re.match(r"(\d+)\s*[x×]\s*\((.+?)\)\s*(?:/\s*(.+))?", line)
+    if nested:
+        return {
+            "type": "nested",
+            "outer_repeat": int(nested.group(1)),
+            "inner_set": parse_swim_line(nested.group(2)),
+            "group_rest_sec": parse_rest(nested.group(3) or "")
+        }
+
+    # Standard interval: Nx distance @ target / rest
+    interval = re.match(
+        r"(\d+)\s*[x×]\s*(\d+)\s*m?\s*(?:@\s*([^\n/]+?))?(?:\s*/\s*(.+))?$",
+        line, re.IGNORECASE
+    )
+    if interval:
+        return {
+            "type": "interval",
+            "repeat": int(interval.group(1)),
+            "distance_m": int(interval.group(2)),
+            "target": parse_swim_target(interval.group(3) or ""),
+            "rest_sec": parse_rest(interval.group(4) or ""),
+            "raw": line
+        }
+
+    # Single block: 400m easy, 800m pull
+    single = re.match(r"(\d+)\s*m?\s*(.*)", line, re.IGNORECASE)
+    if single:
+        desc = single.group(2).strip()
+        return {
+            "type": "single",
+            "distance_m": int(single.group(1)),
+            "target": parse_swim_target(desc),
+            "modifier": detect_swim_modifier(desc),
+            "raw": line
+        }
+
+    return {"type": "raw", "raw": line}
+
+
+def parse_swim_target(text: str) -> dict:
+    if not text: return {"type": "none"}
+    t = text.strip().lower()
+
+    # CSS offset: CSS+5, CSS-3, CSS
+    m = re.match(r"css\s*([+-]\s*\d+)?", t)
+    if m:
+        offset_str = (m.group(1) or "0").replace(" ", "")
+        return {"type": "css_offset", "offset_sec": int(offset_str) if offset_str not in ("","0") else 0}
+
+    # Zone: Z3, zone 4
+    m = re.search(r"z(?:one\s*)?(\d)", t)
+    if m: return {"type": "pace_zone", "zone": int(m.group(1))}
+
+    # Named intensities
+    for keyword, result in [
+        ("easy", {"type":"rpe","rpe":3}), ("moderate", {"type":"rpe","rpe":5}),
+        ("hard", {"type":"rpe","rpe":7}), ("race pace", {"type":"race_pace"}),
+        ("threshold", {"type":"css_offset","offset_sec":0}),
+    ]:
+        if keyword in t: return result
+
+    # Absolute pace: 1:45/100m
+    m = re.match(r"(\d+):(\d+)", t)
+    if m: return {"type": "absolute_pace", "sec_per_100m": int(m.group(1))*60+int(m.group(2))}
+
+    return {"type": "raw", "raw": text}
+
+
+def detect_swim_modifier(text: str) -> str | None:
+    t = text.lower()
+    for kw, tag in [("pull","pull_buoy"),("kick","kickboard"),("paddle","paddles"),
+                    ("drill","drill"),("descend","descend"),("build","build"),
+                    ("negative split","neg_split"),("bilateral","bilateral_breathing")]:
+        if kw in t: return tag
+    return None
+
+
+def parse_rest(text: str) -> int:
+    if not text: return 0
+    t = text.strip().lower()
+    for pattern, fn in [
+        (r"(\d+)\s*min", lambda m: int(m.group(1))*60),
+        (r"(\d+):(\d+)", lambda m: int(m.group(1))*60+int(m.group(2))),
+        (r"(\d+)\s*s",   lambda m: int(m.group(1))),
+        (r"(\d+)",       lambda m: int(m.group(1))),
+    ]:
+        m = re.search(pattern, t)
+        if m: return fn(m)
+    return 0
+```
+
+### Run Notation
+
+```python
+def parse_run_notation(lines: list[str]) -> dict:
+    warmup, main_sets, cooldown = [], [], []
+    current = "main"
+    for line in lines:
+        line = line.strip()
+        if not line: continue
+        ll = line.lower()
+        if any(w in ll for w in ("warm","wu","easy first")): current = "warmup"
+        elif any(w in ll for w in ("cool","cd","easy last","easy finish")): current = "cooldown"
+        parsed = parse_run_line(line)
+        (warmup if current=="warmup" else cooldown if current=="cooldown" else main_sets).append(parsed)
+    return {"warmup": warmup, "main_sets": main_sets, "cooldown": cooldown}
+
+
+def parse_run_line(line: str) -> dict:
+    line = line.strip()
+
+    # Intervals: 6x800m @ 5k pace / 400m jog
+    m = re.match(
+        r"(\d+)\s*[x×]\s*(\d+\.?\d*)\s*(m|km|mile|min|sec)\s*"
+        r"(?:@\s*([^\n/]+?))?(?:\s*/\s*(.+))?$",
+        line, re.IGNORECASE
+    )
+    if m:
+        amount, unit = float(m.group(2)), m.group(3).lower()
+        dist = ({"m": amount, "km": amount*1000, "mile": amount*1609}.get(unit)
+                if unit in ("m","km","mile","miles") else None)
+        dur = ({"min": amount*60, "sec": amount}.get(unit)
+               if unit in ("min","sec") else None)
+        return {
+            "type": "interval",
+            "repeat": int(m.group(1)),
+            "distance_m": dist,
+            "duration_sec": dur,
+            "target": parse_run_target(m.group(4) or ""),
+            "recovery": parse_run_recovery(m.group(5) or ""),
+            "raw": line
+        }
+
+    # Steady block: 20min easy, 30min Z2
+    m = re.match(r"(\d+\.?\d*)\s*(min|km|miles?)\s*(.*)", line, re.IGNORECASE)
+    if m:
+        unit = m.group(2).lower()
+        return {
+            "type": "steady",
+            "duration_min": float(m.group(1)) if "min" in unit else None,
+            "distance_m": (float(m.group(1)) * (1000 if "km" in unit else 1609))
+                          if "min" not in unit else None,
+            "target": parse_run_target(m.group(3)),
+            "raw": line
+        }
+
+    return {"type": "raw", "raw": line}
+
+
+def parse_run_target(text: str) -> dict:
+    if not text: return {"type": "none"}
+    t = text.strip().lower()
+    for ref, result in [
+        ("5k pace",        {"type":"race_pace","distance":"5k"}),
+        ("10k pace",       {"type":"race_pace","distance":"10k"}),
+        ("marathon pace",  {"type":"race_pace","distance":"marathon"}),
+        ("threshold",      {"type":"threshold"}),
+        ("tempo",          {"type":"threshold"}),
+        ("easy",           {"type":"zone","zone":2}),
+        ("recovery",       {"type":"zone","zone":1}),
+        ("hard",           {"type":"zone","zone":4}),
+    ]:
+        if ref in t: return result
+    m = re.search(r"z(?:one\s*)?(\d)", t)
+    if m: return {"type": "zone", "zone": int(m.group(1))}
+    m = re.search(r"hr\s*[<≤]\s*(\d+)|[<≤]\s*(\d{3})\s*bpm", t)
+    if m: return {"type": "hr_ceiling", "hr_max": int(m.group(1) or m.group(2))}
+    m = re.match(r"(\d+):(\d+)\s*(?:/\s*(?:km|mile))?", t)
+    if m: return {"type": "absolute_pace", "sec_per_km": int(m.group(1))*60+int(m.group(2))}
+    return {"type": "raw", "raw": text}
+
+
+def parse_run_recovery(text: str) -> dict:
+    if not text: return {"type": "none"}
+    t = text.strip().lower()
+    if "jog" in t: return {"type": "jog", "distance_m": extract_distance(t), "duration_min": extract_duration(t)}
+    if "walk" in t: return {"type": "walk", "duration_min": extract_duration(t)}
+    rest_sec = parse_rest(t)
+    if rest_sec > 0: return {"type": "rest", "duration_sec": rest_sec}
+    return {"type": "raw", "raw": text}
+```
+
+---
+
+## Swim Session Classification from FIT Data
+
+When no structured planned session exists, classify the completed swim from lap data.
+
+```python
+def classify_swim_session(fit_data: dict, css_sec_per_100m: float) -> dict:
+    """
+    Classify a completed swim from FIT lap data.
+    Garmin pool swim records each length/lap separately — interval structure is detectable.
+    """
+    laps = fit_data.get("laps", [])
+    if not laps:
+        return {"session_type": "unstructured"}
+
+    total_dist = sum(l.get("total_distance", 0) for l in laps)
+    duration_sec = fit_data.get("duration_sec", 1)
+    avg_pace = (duration_sec / total_dist) * 100 if total_dist else None  # sec/100m
+
+    # Separate active laps from rest laps (short-duration, standing between sets)
+    active = [l for l in laps if l.get("total_distance", 0) > 25]
+    rest_laps = [l for l in laps if 0 < l.get("total_distance", 0) <= 25]
+
+    # Detect interval structure from repeated same-distance laps
+    if len(rest_laps) >= 3:
+        intervals = detect_swim_intervals(active, rest_laps)
+        if intervals:
+            return {
+                "session_type": "interval",
+                "effort": classify_swim_effort(avg_pace, css_sec_per_100m),
+                "detected_sets": intervals,
+                "total_distance_m": total_dist
+            }
+
+    # Continuous swim — classify by pace vs CSS
+    if avg_pace and css_sec_per_100m:
+        ratio = avg_pace / css_sec_per_100m
+        session_type = (
+            "threshold_or_above" if ratio < 0.95 else
+            "css_pace"           if ratio < 1.05 else
+            "aerobic"            if ratio < 1.25 else
+            "easy_recovery"
+        )
+    else:
+        session_type = "unclassified"
+
+    return {"session_type": session_type, "total_distance_m": total_dist,
+            "avg_pace_sec_100m": round(avg_pace, 1) if avg_pace else None}
+
+
+def detect_swim_intervals(active_laps: list, rest_laps: list) -> list | None:
+    from collections import Counter
+    distances = [round(l.get("total_distance", 0) / 25) * 25 for l in active_laps]
+    dist_counts = Counter(distances)
+    dominant_dist, dominant_count = dist_counts.most_common(1)[0]
+    if dominant_count < 3:
+        return None
+
+    dominant = [l for l, d in zip(active_laps, distances) if d == dominant_dist]
+    avg_lap_time = sum(l.get("total_timer_time", 0) for l in dominant) / len(dominant)
+    avg_pace = (avg_lap_time / dominant_dist) * 100
+    avg_rest = (sum(l.get("total_timer_time", 0) for l in rest_laps) / len(rest_laps)
+                if rest_laps else 0)
+
+    return [{"repeat": dominant_count, "distance_m": dominant_dist,
+             "avg_pace_sec_100m": round(avg_pace, 1), "avg_rest_sec": round(avg_rest)}]
+
+
+def classify_swim_effort(pace: float | None, css: float) -> str:
+    if not pace: return "unknown"
+    r = pace / css
+    if r < 0.95: return "above_css"
+    if r < 1.02: return "css"
+    if r < 1.10: return "aerobic_threshold"
+    if r < 1.25: return "aerobic"
+    return "easy_recovery"
+```
+
+
+---
 
 ### Zwift .zwo Parser
 
@@ -187,24 +1885,95 @@ def parse_zwo(filepath: str, ftp_at_time: float) -> dict:
 
 ### Garmin Connect Planned Workouts
 
+> **Library status note:** `garth` is deprecated — Garmin changed their auth flow and broke it. Use `python-garminconnect` (cyberjunky) or `garmy` for current integrations. Both carry the same structural risk: they reverse-engineer Garmin's unofficial mobile app API. The file-watch fallback below ensures the pipeline keeps running if either breaks.
+
 ```python
-import garth
+# Current working library — as of March 2026
+# pip install garminconnect
+from garminconnect import Garmin
 
-garth.login('email', 'password')
-garth.save('~/.garth')
+def get_garmin_client(email: str, password: str, token_dir: str = "~/.garminconnect") -> Garmin:
+    """
+    Initialise Garmin client with token persistence.
+    Tokens saved to disk — avoids re-login on every run.
+    If login fails (auth change), falls back to file-watch path.
+    """
+    client = Garmin(email=email, password=password, is_cn=False,
+                    prompt_mfa=lambda: input("MFA code: "))
+    try:
+        client.login(token_dir)
+    except Exception as e:
+        log_api_failure("garmin_login", str(e))
+        notify("⚠️ Garmin API login failed", f"Error: {e}. Drop FIT exports into /imports/garmin/fit/")
+        raise GarminAPIUnavailable(e)
+    return client
 
-def get_garmin_planned_workouts(start_date: str, end_date: str) -> list:
+def get_garmin_planned_workouts(client: Garmin, start_date: str, end_date: str) -> list:
     """Fetch planned workouts from Garmin Connect calendar."""
-    calendar = garth.connectapi(
-        f'/workout-service/schedule/{start_date}/{end_date}'
-    )
-    workouts = []
-    for entry in calendar:
-        if entry.get("workoutId"):
-            detail = garth.connectapi(f'/workout-service/workouts/{entry["workoutId"]}')
-            workouts.append(normalise_garmin_workout(detail))
-    return workouts
+    try:
+        calendar = client.get_workout_list(start_date, end_date)
+        workouts = []
+        for entry in (calendar or []):
+            if entry.get("workoutId"):
+                detail = client.get_workout(entry["workoutId"])
+                workouts.append(normalise_garmin_workout(detail))
+        return workouts
+    except Exception as e:
+        log_api_failure("garmin_planned_workouts", str(e))
+        return []  # pipeline continues — file-watch path picks up the slack
 ```
+
+### File-Watch Ingestion — Garmin
+
+```python
+from pathlib import Path
+from watchdog.observers import Observer
+from watchdog.events import FileSystemEventHandler
+import fitparse
+
+GARMIN_IMPORT_DIR = Path("/imports/garmin/fit")
+
+def process_fit_file(fit_path: Path) -> dict | None:
+    """
+    Parse a FIT file into the unified activity schema.
+    Called both by the file watcher and the API pipeline — same output shape.
+    """
+    try:
+        fitfile = fitparse.FitFile(str(fit_path))
+        return extract_activity_from_fit(fitfile)
+    except Exception as e:
+        log_parse_error(fit_path, e)
+        return None
+
+def scan_import_folder(folder: Path) -> list:
+    """
+    Process any FIT files dropped into the import folder since last run.
+    Marks processed files to avoid re-ingestion.
+    """
+    processed = get_processed_files()
+    new_files = [f for f in folder.glob("*.fit") if str(f) not in processed]
+    
+    activities = []
+    for fit_path in sorted(new_files):
+        activity = process_fit_file(fit_path)
+        if activity:
+            upsert_activity(activity)
+            mark_processed(str(fit_path))
+            activities.append(activity)
+    
+    return activities
+
+class FitFileWatcher(FileSystemEventHandler):
+    """Watches the import folder and processes FIT files as they arrive."""
+    def on_created(self, event):
+        if event.src_path.endswith(".fit"):
+            activity = process_fit_file(Path(event.src_path))
+            if activity:
+                upsert_activity(activity)
+                mark_processed(event.src_path)
+```
+
+
 
 ---
 
@@ -1584,24 +3353,41 @@ def write_zwo_to_zwift(zwo_content: str, filename: str, zwift_user_id: str) -> N
 ### Garmin Workout Push
 
 ```python
-def push_to_garmin(session: dict, sport: str) -> None:
-    """Convert session JSON to Garmin workout payload and push via garth."""
+def push_to_garmin(session: dict, sport: str, client: Garmin) -> bool:
+    """
+    Push a generated session to Garmin Connect calendar via python-garminconnect.
+    Returns True on success, False on failure.
+    On failure: session is still delivered via morning readout UI — watch sync is a bonus,
+    not a dependency. Athlete can manually add to watch if needed.
+    """
     payload = {
         "workoutName": session["title"],
         "sportType": {"sportTypeId": GARMIN_SPORT_IDS[sport]},
         "workoutSegments": build_garmin_segments(session["structure"], sport)
     }
     
-    garth.connectapi(
-        '/workout-service/workouts',
-        method='POST',
-        json=payload
-    )
+    try:
+        client.upload_workout(payload)
+        log_push_success(session["session_id"], "garmin")
+        return True
+    except Exception as e:
+        log_push_failure(session["session_id"], "garmin", str(e))
+        notify(
+            "⚠️ Garmin session push failed",
+            f"'{session['title']}' could not be pushed to your watch. "
+            f"Check the morning readout for session details.",
+            priority="low"
+        )
+        return False
 
 GARMIN_SPORT_IDS = {
     "run": 1, "bike": 2, "swim": 5,
     "strength": 14, "yoga": 15, "climb": 26
 }
+
+# Graceful degradation: if Garmin API is unavailable, the morning readout
+# is the primary delivery channel. The watch push is a convenience layer.
+# Sessions are always stored in PostgreSQL and visible in the UI regardless.
 ```
 
 ---
@@ -1712,7 +3498,7 @@ results = collection.query(
 
 ---
 
-*AI Coaching System — Code Ideas & Scratchpad · March 2026 · Back burner, Priority 5*
+*AI Coaching System — Code Ideas & Scratchpad · March 2026 · *
 
 ---
 
@@ -2239,7 +4025,7 @@ function DataSourceManager() {
 
 ---
 
-*AI Coaching System — Code Ideas & Scratchpad · March 2026 · Back burner, Priority 5*
+*AI Coaching System — Code Ideas & Scratchpad · March 2026 · *
 
 ---
 
@@ -3096,4 +4882,4 @@ def run_full_export(athlete_id: str):
 
 ---
 
-*AI Coaching System — Code Ideas & Scratchpad · March 2026 · Back burner project, Priority 5*
+*AI Coaching System — Code Ideas & Scratchpad · March 2026 · , *

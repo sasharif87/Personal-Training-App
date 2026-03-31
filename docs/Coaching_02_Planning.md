@@ -2,13 +2,15 @@
 
 **Phase Sequence · Dependencies · Decision Points · Timeline**
 
+> See **Doc 01** for system architecture. **Doc 03** for training logic. **Doc 04** for data integrations. **Doc 05** for nutrition detail. **Doc 06** for code patterns.
+
 ---
 
 ## Project Status
 
 | Field | Detail |
 |---|---|
-| Priority | Back burner — behind race season, SME, TrueNAS infra, house projects |
+| Priority | Planning starts behind race season, SME, TrueNAS infra, house projects |
 | Status | Concept fully documented — infrastructure awareness mode only |
 | Phase A start | Late 2026 — after core infra is stable and UPS installed |
 | Full operational system | 2028 — refinement loop with RAG and fine-tuning |
@@ -57,11 +59,11 @@ This is new scope for Phase A and must be established before the analysis layer 
 
 **TrainerRoad**
 
-- Run trainerroad-export for full historical pull of bike workout library and calendar
-- Capture interval structure, power targets, and coaching description text
-- Match to Garmin completed bike activities by date to build plan/actual pairs
-- One-time historical pull — ongoing bike data flows via Garmin sync
-- Store .zwo equivalents for all historical TR workouts where structure is available
+- One-time export of the full TR workout library using `trainerroad-export` (community tool — run it once, store the library locally, no ongoing dependency)
+- Build local `tr_workout_library` table from the export — keyed by name, with interval structure, TSS, IF, and coaching text
+- TR workout names are already embedded in Garmin FIT file metadata when TR sessions sync through Garmin — no separate ongoing pull needed
+- Enrichment pipeline: FIT file arrives → extract `workout_name` field → look up in local library (exact match → base name match → multi-signal fuzzy match on name + IF + TSS + workout type) → attach full structure as the planned session
+- See Doc 06 for full matching logic including hard-pass rules on IF and TSS delta
 
 **Zwift**
 
@@ -72,16 +74,24 @@ This is new scope for Phase A and must be established before the analysis layer 
 
 **Garmin Planned Workouts**
 
-- Pull all planned workout definitions via garth GET /workout-service/workouts
+- Pull all planned workout definitions via python-garminconnect workout API (with file-watch fallback)
 - These capture coach-pushed sessions and system-authored sessions after Phase C
 - Include step-by-step interval structure where available
 
-### Trainer Road Historical Export
+**Coach Spreadsheets**
 
-- Run trainerroad-export to pull full workout library and calendar history as structured data
-- Capture workout description text — the coaching intent, not just the power numbers
-- This is a one-time historical pull — ongoing bike workout data comes via Garmin sync
-- Store workout definitions locally with their Garmin-matched execution data
+- Build MCR-layout parser to ingest multi-group coach plan spreadsheets
+- Athlete's group column stored in profile — auto-applied on every import
+- Drop .xlsx or .csv into /imports/spreadsheets/ — pipeline picks up and processes overnight
+- Generic layout detection for non-MCR plans; LLM fallback for unrecognised layouts
+
+### Trainer Road Library Build
+
+- Run `trainerroad-export` once to pull the full TR workout library to disk
+- Build `tr_workout_library` PostgreSQL table: name, description, TSS, IF, duration, workout_type, interval structure
+- Classify each workout type (VO2max / threshold / sweet spot / tempo / endurance / recovery) from IF value
+- Create trigram index on name field for fuzzy match performance
+- Library stays on disk indefinitely — ongoing TR data arrives via Garmin FIT sync and is matched against it automatically
 
 ### Cross-Training Logging Setup
 
@@ -98,6 +108,14 @@ This is new scope for Phase A and must be established before the analysis layer 
 - Store race calendar in PostgreSQL with A/B/C priority field
 - Auto-calculate taper start and recovery end dates from priority and format
 - Output to race_calendar.md on each update — human-readable reference file
+
+### Nutrition Foundation
+
+- Build nutrition product library in PostgreSQL — seed with common products (Maurten, SiS, Clif, etc.)
+- Add nutrition profile fields to Athlete Profile UI — dietary approach, allergies, preferences, cooking time
+- Build post-session nutrition log — what products were used, amount, GI response
+- Establish in-session fueling target calculation and wire into session note generation for sessions > 90min
+- Back-populate any existing nutrition logs from TrainingPeaks or manual records
 
 ### Gear Registry & Shoe Mileage
 
@@ -255,16 +273,36 @@ Three prompt types need to work before Phase C is complete: the monthly generati
 - Input: today's planned session + conditional alt from monthly plan, overnight HRV, sleep score, body battery, yesterday's execution score
 - Ask LLM to: (1) assess signal conflict level, (2) write final versions of primary and alt, (3) produce a one-line signal summary for the morning readout
 - Output is presented to athlete — not acted on automatically
-- Log athlete's selection and subsequent execution — did they pick primary or alt, and how did it go?
+- Log my selection and subsequent execution — did they pick primary or alt, and how did it go?
 
 **Other Phase C milestones**
 
 - Test Zwift .zwo output generation — validate power targets against FTP fractions
-- Test Garmin workout push via garth — verify sessions appear on watch correctly
+- Test Garmin workout push via python-garminconnect — verify sessions appear on watch correctly
 - Run 70B Q4 via CPU offload — validate overnight batch generation is practical
 - Build morning readout format — notification or simple dashboard showing both options with signal context
 
-**Vacation & Travel Mode**
+**Weekly Meal Planning & Meal Prep**
+
+- Integrate weekly meal plan generation into the Sunday weekly review LLM prompt
+- Build Nutrition Planner UI module — weekly meal view, meal prep checklist, shopping list
+- Build shopping list generator from weekly meal plan
+- Test meal plan quality — does the load-anchored carb structure match the training week?
+- Wire nutrition compliance log into weekly summary and execution scoring
+
+**Gut Training Protocol**
+
+- Implement carb target escalation logic in monthly generation for IM/70.3 build phases
+- Progressive targets: 40–50g/hr weeks 1–2 → 80–90g/hr weeks 7–8
+- Track gut training compliance in post-session log; slow escalation if GI issues logged
+- Wire product tolerance data into session fueling plan product selection
+
+**Race Day Fueling Plan Generation**
+
+- Build race-day fueling plan generator — fires during A-race taper week
+- Plan expressed in specific products from athlete's library, by discipline, by time/distance marker
+- Include contingency protocol for GI distress
+- Add race nutrition review to post-race result intake
 
 - Build vacation planner UI — date range, location, equipment checklist, training intent selector
 - Implement equipment constraint logic in monthly generation prompt — available_equipment drives allowed session types
@@ -338,13 +376,7 @@ Three prompt types need to work before Phase C is complete: the monthly generati
 - Wire all alert conditions to ntfy with appropriate severity levels
 - Build pipeline health dashboard in UI — last sync times, error log, job history
 
-**Multi-Athlete Support**
-
-- Implement per-athlete database isolation in PostgreSQL and InfluxDB
-- Build athlete switcher in UI with per-athlete login
-- Verify all pipeline jobs are athlete-scoped — no cross-contamination possible
-
-> **Phase C output:** complete pipeline with all session types, testing protocols, injury tracking, race result ingestion, NFOR detection, weather scheduling, nutrition targets, full notification layer, and multi-athlete support. This is the full production-capable system before RAG.
+> **Phase C output:** complete pipeline with all session types, testing protocols, injury tracking, race result ingestion, NFOR detection, weather scheduling, nutrition targets, and full notification layer. This is the full production-capable system before RAG.
 
 
 
@@ -372,13 +404,13 @@ Only build the retrieval layer when Phase C is working and you have directly obs
 
 ### Target: 2028
 
-The complete three-tier autonomous loop. Monthly generation authors the mesocycle. Weekly review keeps it calibrated. Morning decision surfaces dual options and puts the athlete in control.
+The complete three-tier autonomous loop. Monthly generation authors the mesocycle. Weekly review keeps it calibrated. Morning decision surfaces dual options and I have the final call.
 
 - Automated daily data ingestion pipeline — no manual triggers
 - Monthly generation fires at block phase transitions and on the 1st of each month
 - Planned workout fetch runs alongside completed activity sync — both sides always current
 - Weekly review fires each Sunday overnight — adjusts coming week against prior week execution drift
-- Morning decision generates final primary + conditional alt based on overnight biometrics; athlete chooses
+- Morning decision generates final primary + conditional alt based on overnight biometrics; I choose
 - Plan state management — system tracks day, week, block, and month position
 - Athlete choice logging — primary vs alt selection tracked and correlated to execution outcomes over time
 - Signal importance model retrains monthly as execution data accumulates — weights shift as patterns emerge
@@ -411,4 +443,4 @@ The complete three-tier autonomous loop. Monthly generation authors the mesocycl
 
 ---
 
-*AI Coaching System — Project Planning · March 2026 · Back burner, Priority 5*
+*AI Coaching System — Project Planning · March 2026 · *
