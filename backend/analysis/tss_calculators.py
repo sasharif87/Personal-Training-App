@@ -89,6 +89,11 @@ def calculate_run_tss(
     hr_data: Optional[List[float]] = None,
     avg_hr: Optional[float] = None,
     lthr: Optional[float] = None,
+    # --- GPS / Speed data for auto-calculating NGP ---
+    speed_data: Optional[List[float]] = None,
+    elevation_data: Optional[List[float]] = None,
+    distance_data: Optional[List[float]] = None,
+    lat_lon_data: Optional[List[tuple]] = None,
     # --- Control ---
     method: Optional[str] = None,
 ) -> float:
@@ -122,6 +127,17 @@ def calculate_run_tss(
     """
     if duration_sec <= 0:
         return 0.0
+
+    # --- Auto-calculate NGP if needed and data is available ---
+    if not normalized_pace_sec_per_km and speed_data and elevation_data:
+        try:
+            ngp = calculate_normalized_pace_from_data(
+                speed_data, elevation_data, lat_lon_data, distance_data
+            )
+            if ngp and ngp > 0:
+                normalized_pace_sec_per_km = ngp
+        except Exception as e:
+            logger.warning("Failed to auto-calculate NGP: %s", e)
 
     # --- Auto-select method ---
     if method is None:
@@ -236,6 +252,82 @@ def _run_tss_hr(
     trimp = duration_min * hr_frac * math.exp(1.92 * hr_frac)
     tss = trimp * 0.80
     return round(min(tss, 400.0), 1)
+
+
+# ---------------------------------------------------------------------------
+# NGP calculation
+# ---------------------------------------------------------------------------
+def _get_ngp_factor(gradient: float) -> float:
+    """
+    Minetti formula for running energy cost as a function of gradient.
+    Normalized so flat (0%) = 1.0.
+    """
+    g = max(-0.25, min(0.25, gradient))
+    cost = 155.4 * (g**5) - 30.4 * (g**4) - 43.3 * (g**3) + 46.3 * (g**2) + 19.5 * g + 3.6
+    return max(0.5, cost / 3.6)
+
+
+def _haversine_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Returns distance in meters between two lat/lon points."""
+    import math
+    R = 6371000.0
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    delta_phi = math.radians(lat2 - lat1)
+    delta_lambda = math.radians(lon2 - lon1)
+    a = math.sin(delta_phi / 2)**2 + math.cos(phi1) * math.cos(phi2) * math.sin(delta_lambda / 2)**2
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+    return R * c
+
+
+def calculate_normalized_pace_from_data(
+    speed_data: List[float],
+    elevation_data: List[float],
+    lat_lon_data: Optional[List[tuple]] = None,
+    distance_data: Optional[List[float]] = None,
+) -> Optional[float]:
+    """
+    Calculate Normalized Graded Pace (NGP) from time-series data.
+    Takes 1-sec or dense arrays and applies gradient-adjusted cost.
+    Returns pace in seconds per km (e.g. 5:00/km = 300).
+    """
+    if not speed_data or not elevation_data or len(speed_data) != len(elevation_data):
+        return None
+        
+    gap_speeds = []
+    n = len(speed_data)
+    
+    for i in range(1, n):
+        speed = speed_data[i]
+        if speed <= 0 or speed > 12.0:  # ignore stationary or car/bike glitch
+            continue
+            
+        delta_elev = elevation_data[i] - elevation_data[i-1]
+        
+        if distance_data and len(distance_data) == n:
+            delta_dist = distance_data[i] - distance_data[i-1]
+        elif lat_lon_data and len(lat_lon_data) == n:
+            lat1, lon1 = lat_lon_data[i-1][:2]
+            lat2, lon2 = lat_lon_data[i][:2]
+            delta_dist = _haversine_distance(lat1, lon1, lat2, lon2)
+        else:
+            delta_dist = speed * 1.0  # assume 1Hz logging
+            
+        if delta_dist > 0.5:
+            gradient = delta_elev / delta_dist
+        else:
+            gradient = 0.0
+            
+        factor = _get_ngp_factor(gradient)
+        gap_speeds.append(speed * factor)
+        
+    if not gap_speeds:
+        return None
+        
+    ngp_speed_mps = _normalized_power(gap_speeds)
+    if ngp_speed_mps <= 0.5:
+        return None
+        
+    return 1000.0 / ngp_speed_mps
 
 
 # ---------------------------------------------------------------------------
