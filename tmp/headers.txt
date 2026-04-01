@@ -1,0 +1,33 @@
+## Data Ingestion — Completed Activities
+## Planned Workout Retrieval
+## Spreadsheet Plan Ingest
+## MCR / Coach Plan Layout Parser (Layout D)
+## Swim & Run Workout Notation Parser
+## Swim Session Classification from FIT Data
+## Plan vs Actual Comparison Engine
+## Cross-Training Logging
+## Season Planning
+## Analysis Layer — JupyterLab
+## LLM Interface
+## Output Generation
+## Orchestration & Scheduling
+## RAG Layer — Phase D
+## Health Platform Integrations
+## Menstrual Cycle Phase Engine
+## Medication Context Injection
+## Vacation & Travel Mode
+## Training Retreat Mode
+## Web UI — FastAPI Backend Patterns
+## Nutrition & Fueling
+## Injury Tracking & RPE Logging
+## Race Result Ingestion
+## NFOR Detection
+## Notification & Pipeline Monitoring
+## Testing Protocol Generation
+## Weather-Aware Scheduling
+## Gear & Equipment Tracking
+## HRV Device Normalisation
+## Multi-Athlete Support
+## Brick & Open Water Specifics
+## Sleep Staging Integration
+## Data Export & Portability

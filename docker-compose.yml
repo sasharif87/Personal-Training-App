@@ -42,6 +42,27 @@ services:
       retries: 5
 
   # ---------------------------------------------------------------------------
+  # PostgreSQL 16 — relational storage (plans, execution, TR library)
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: postgres:16
+    container_name: coaching_postgres
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-coaching}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-coaching_db}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-coaching}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ---------------------------------------------------------------------------
   # ChromaDB — vector store for RAG (historical training block embeddings)
   # ---------------------------------------------------------------------------
   chromadb:
@@ -100,6 +121,7 @@ services:
       INFLUXDB_TOKEN: ${INFLUXDB_TOKEN}
       INFLUXDB_ORG: ${INFLUXDB_ORG:-coaching}
       INFLUXDB_BUCKET: ${INFLUXDB_BUCKET:-training}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-coaching}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-coaching_db}
     volumes:
       - season-config:/config
       - workout-imports:/data/workout_imports
@@ -119,12 +141,15 @@ services:
     container_name: coaching_app
     restart: unless-stopped
     environment:
-      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://192.168.50.46:11434}
-      OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.1:70b}
+      OLLAMA_PRIMARY_URL: ${OLLAMA_PRIMARY_URL:-http://192.168.50.250:11434} # Gaming Rig
+      OLLAMA_FALLBACK_URL: ${OLLAMA_FALLBACK_URL:-http://192.168.50.46:11434} # TrueNAS
+      OLLAMA_HEAVY_MODEL: ${OLLAMA_HEAVY_MODEL:-qwen2.5:72b}
+      OLLAMA_FAST_MODEL: ${OLLAMA_FAST_MODEL:-llama3.1:8b}
       INFLUXDB_URL: http://influxdb:8086
       INFLUXDB_TOKEN: ${INFLUXDB_TOKEN}
       INFLUXDB_ORG: ${INFLUXDB_ORG:-coaching}
       INFLUXDB_BUCKET: ${INFLUXDB_BUCKET:-training}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-coaching}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-coaching_db}
       CHROMADB_HOST: chromadb
       CHROMADB_PORT: "8000"
       GARMIN_USERNAME: ${GARMIN_USERNAME}
@@ -136,6 +161,9 @@ services:
       SEASON_CONFIG_PATH: /config/season.json
       WORKOUTS_CONFIG_DIR: /app/config/workouts
       WORKOUT_IMPORT_DIR: /data/workout_imports
+      CRON_DAILY: ${CRON_DAILY:-"0 3 * * *"}
+      CRON_WEEKLY: ${CRON_WEEKLY:-"0 2 * * 1"}   # 2 AM every Monday
+      CRON_MONTHLY: ${CRON_MONTHLY:-"0 1 1 * *"} # 1 AM on the 1st
       TZ: ${TZ:-Australia/Melbourne}
     volumes:
       - garmin-data:/data/garmin
@@ -148,6 +176,8 @@ services:
       influxdb:
         condition: service_healthy
       chromadb:
+        condition: service_healthy
+      postgres:
         condition: service_healthy
     # Default: stay alive so you can exec in or trigger manually
     # The 3 AM cron is managed by the app's internal APScheduler
@@ -162,6 +192,7 @@ services:
 volumes:
   influxdb-data:
   influxdb-config:
+  postgres-data:
   chromadb-data:
   grafana-data:
   garmin-data:

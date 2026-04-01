@@ -45,10 +45,12 @@ logger = logging.getLogger("main")
 # ---------------------------------------------------------------------------
 def parse_args():
     parser = argparse.ArgumentParser(description="AI Coaching System pipeline runner")
-    parser.add_argument("--daemon",     action="store_true", help="Run as scheduled daemon (APScheduler)")
-    parser.add_argument("--dry-run",    action="store_true", help="Generate plan only, skip device push")
-    parser.add_argument("--skip-sync",  action="store_true", help="Skip Garmin Connect sync step")
-    parser.add_argument("--status",     action="store_true", help="Print current fitness state and exit")
+    parser.add_argument("--daemon",       action="store_true", help="Run as scheduled daemon (APScheduler)")
+    parser.add_argument("--dry-run",      action="store_true", help="Generate plan only, skip device push")
+    parser.add_argument("--skip-sync",    action="store_true", help="Skip Garmin Connect sync step")
+    parser.add_argument("--status",       action="store_true", help="Print current fitness state and exit")
+    parser.add_argument("--run-weekly",   action="store_true", help="Manually trigger the Weekly Review pipeline immediately")
+    parser.add_argument("--run-monthly",  action="store_true", help="Manually trigger the Monthly Generation pipeline immediately")
     return parser.parse_args()
 
 
@@ -63,7 +65,30 @@ def run_pipeline(dry_run: bool = False, skip_sync: bool = False) -> int:
         logger.info("Pipeline succeeded — week %d, %d sessions", plan.week_number, len(plan.sessions))
         return 0
     except Exception as exc:
-        logger.error("Pipeline failed: %s", exc, exc_info=True)
+        logger.error("Daily Pipeline failed: %s", exc, exc_info=True)
+        return 1
+
+def run_weekly_pipeline(dry_run: bool = False) -> int:
+    from backend.orchestration.weekly_pipeline import WeeklyPipeline
+    pipeline = WeeklyPipeline()
+    try:
+        plan = pipeline.run(dry_run=dry_run)
+        logger.info("Weekly Pipeline succeeded — week %d revised", plan.week_number)
+        return 0
+    except Exception as exc:
+        logger.error("Weekly Pipeline failed: %s", exc, exc_info=True)
+        return 1
+
+def run_monthly_pipeline(dry_run: bool = False) -> int:
+    # Assuming standard pattern for MonthlyPipeline
+    from backend.orchestration.monthly_pipeline import MonthlyPipeline
+    pipeline = MonthlyPipeline()
+    try:
+        plan = pipeline.run(dry_run=dry_run)
+        logger.info("Monthly Pipeline succeeded — Generated 4-week block.")
+        return 0
+    except Exception as exc:
+        logger.error("Monthly Pipeline failed: %s", exc, exc_info=True)
         return 1
 
 
@@ -105,16 +130,36 @@ def run_daemon() -> None:
         logger.error("APScheduler not installed — add 'apscheduler' to requirements.txt")
         sys.exit(1)
 
-    cron = os.environ.get("PIPELINE_CRON", "0 3 * * *")
+    cron_daily = os.environ.get("CRON_DAILY", "0 3 * * *")
+    cron_weekly = os.environ.get("CRON_WEEKLY", "0 2 * * 1")
+    cron_monthly = os.environ.get("CRON_MONTHLY", "0 1 1 * *")
     tz = os.environ.get("TZ", "Australia/Melbourne")
 
     scheduler = BlockingScheduler(timezone=tz)
-    trigger = CronTrigger.from_crontab(cron, timezone=tz)
 
-    scheduler.add_job(run_pipeline, trigger, id="daily_pipeline", misfire_grace_time=3600)
+    scheduler.add_job(
+        run_monthly_pipeline, 
+        CronTrigger.from_crontab(cron_monthly, timezone=tz), 
+        id="monthly_pipeline", 
+        misfire_grace_time=3600
+    )
+    scheduler.add_job(
+        run_weekly_pipeline, 
+        CronTrigger.from_crontab(cron_weekly, timezone=tz), 
+        id="weekly_pipeline", 
+        misfire_grace_time=3600
+    )
+    scheduler.add_job(
+        run_pipeline, 
+        CronTrigger.from_crontab(cron_daily, timezone=tz), 
+        id="daily_pipeline", 
+        misfire_grace_time=3600
+    )
 
-    logger.info("Daemon started — scheduled: '%s' (%s)", cron, tz)
-    logger.info("Next run: %s", scheduler.get_job("daily_pipeline").next_run_time)
+    logger.info(f"Daemon started in {tz} timezone")
+    logger.info(f"  Monthly Cron : '{cron_monthly}' (Next: {scheduler.get_job('monthly_pipeline').next_run_time})")
+    logger.info(f"  Weekly Cron  : '{cron_weekly}' (Next: {scheduler.get_job('weekly_pipeline').next_run_time})")
+    logger.info(f"  Daily Cron   : '{cron_daily}' (Next: {scheduler.get_job('daily_pipeline').next_run_time})")
 
     try:
         scheduler.start()
@@ -134,6 +179,13 @@ if __name__ == "__main__":
 
     if args.daemon:
         run_daemon()
+    elif args.run_monthly:
+        exit_code = run_monthly_pipeline(dry_run=args.dry_run)
+        sys.exit(exit_code)
+    elif args.run_weekly:
+        exit_code = run_weekly_pipeline(dry_run=args.dry_run)
+        sys.exit(exit_code)
     else:
+        # Default behavior is to trigger the daily routine manually
         exit_code = run_pipeline(dry_run=args.dry_run, skip_sync=args.skip_sync)
         sys.exit(exit_code)

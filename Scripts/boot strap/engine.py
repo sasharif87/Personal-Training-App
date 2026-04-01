@@ -27,22 +27,35 @@ from datetime import datetime
 # ---------------------------------------------------------------------------
 MODEL_PREFERENCES = {
     "reason": [
+        # TrueNAS pool — Quadro RTX 5000 16GB
         "deepseek-r1:32b", "deepseek-r1:14b", "deepseek-r1:8b",
-        "qwen2.5:32b", "qwen2.5:14b", "qwen3:32b", "qwen3:14b",
-        "llama3.1:70b", "llama3.1:8b", "gemma2:27b",
-        "deepseek-coder-v2:16b",  # fallback — can reason okay
+        "qwen2.5:14b",             # on TrueNAS: best available reason model
+        "qwen2.5:32b",
+        "qwen3:32b", "qwen3:14b",
+        "llama3.1:70b", "llama3.1:8b",
+        "gemma2:27b", "gemma2:9b",
+        "mistral-small:latest",    # on TrueNAS: 23.6B, strong reasoner fallback
+        "deepseek-coder-v2:16b",   # on TrueNAS: fallback — can reason okay
     ],
     "code": [
-        "qwen2.5-coder:32b", "qwen2.5-coder:14b", "qwen2.5-coder:7b",
+        # Large models — gaming rig (7800XT 16GB, 9950X3D)
+        "qwen2.5:72b", "qwen2.5-coder:32b",
+        # Mid-range
+        "qwen2.5-coder:14b", "qwen2.5-coder:7b",
         "deepseek-coder-v2:16b",  # older architecture — fallback if no qwen2.5-coder available
         "codellama:34b", "codellama:13b",
         "deepseek-r1:14b",  # fallback — can code okay
         "llama3.1:8b",
     ],
     "quick": [
-        "qwen2.5-coder:7b", "qwen2.5:7b", "llama3.1:8b",
-        "gemma2:9b", "phi3:mini",
-        "deepseek-coder-v2:16b",  # fallback
+        # TrueNAS pool — ordered by speed vs capability
+        "qwen2.5-coder:7b",        # ideal: fast + code-aware (pull if available)
+        "qwen2.5-coder:14b",       # on TrueNAS: best available quick model
+        "qwen2.5:14b", "qwen2.5:7b",
+        "gemma2:9b", "llama3.1:8b", "llama3.2:3b",
+        "phi3:mini",
+        "deepseek-coder-v2:16b",   # fallback
+        "mistral:7b-instruct",
     ],
 }
 
@@ -65,36 +78,63 @@ TEMP_DEFAULTS = {
 # ---------------------------------------------------------------------------
 class Engine:
 
-    def __init__(self, url="http://localhost:11434", models=None):
+    def __init__(self, url="http://192.168.50.46:11434", models=None, code_url=None):
         """
         Args:
-            url: Ollama base URL
-            models: Optional dict pinning roles → model names.
-                    e.g. {"reason": "deepseek-r1:14b", "code": "deepseek-coder-v2:16b"}
-                    Unpinned roles auto-select from available models.
+            url:      Ollama URL for quick + reason roles.
+                      Default: TrueNAS (i5-7600 + Quadro RTX 5000 16GB)
+                        quick  -> qwen2.5-coder:7b
+                        reason -> deepseek-r1:14b
+            code_url: Ollama URL for code role. Falls back to `url` if omitted.
+                      Default: gaming rig (9950X3D + 7800XT 16GB)
+                        code   -> qwen2.5:72b
+            models:   Optional dict pinning roles to specific model names,
+                      e.g. {"reason": "deepseek-r1:14b", "code": "qwen2.5:72b"}
         """
         self.url = url.rstrip("/")
+        self.code_url = (code_url or url).rstrip("/")
         self.pinned = models or {}
-        self._available = None  # lazy-loaded
-        self._resolved = {}     # role → resolved model name
+        self._available = None        # models on url (quick/reason host)
+        self._available_code = None   # models on code_url
+        self._resolved = {}           # role -> model name
 
     # ── Connection & model discovery ─────────────────────────────────────────
 
     def test(self):
-        """Test connection, return (ok, available_models, message)."""
+        """Test both hosts. Returns (ok, available_models, message) based on primary host."""
+        ok, models, msg = self._probe(self.url)
+        if ok:
+            self._available = models
+        # Probe code host separately (may differ from primary)
+        if self.code_url != self.url:
+            code_ok, code_models, _ = self._probe(self.code_url)
+            if code_ok:
+                self._available_code = code_models
+        else:
+            self._available_code = self._available
+        if ok:
+            self._resolve_models()
+        return ok, models, msg
+
+    def _probe(self, url):
+        """Query /api/tags on a host. Returns (ok, model_list, message)."""
         try:
-            req = urllib.request.Request(f"{self.url}/api/tags")
+            req = urllib.request.Request(f"{url}/api/tags")
             with urllib.request.urlopen(req, timeout=10) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
                 models = [m["name"] for m in data.get("models", [])]
-                self._available = models
-                self._resolve_models()
-                return True, models, f"Connected - {len(models)} model(s)"
+                return True, models, f"Connected ({url}) — {len(models)} model(s)"
         except Exception as e:
-            return False, [], f"Cannot reach {self.url}: {e}"
+            return False, [], f"Cannot reach {url}: {e}"
 
     def _resolve_models(self):
-        """Pick the best available model for each role."""
+        """Pick the best available model for each role.
+
+        Routing:
+          code  -> self._available_code (gaming rig pool)
+          quick -> self._available       (TrueNAS pool)
+          reason-> self._available       (TrueNAS pool)
+        """
         if self._available is None:
             self.test()
             if self._available is None:
@@ -106,28 +146,31 @@ class Engine:
                 self._resolved[role] = self.pinned[role]
                 continue
 
-            # Walk preference list, pick first available
+            # Route code role to the code host pool; others use the primary pool
+            pool = (self._available_code or self._available) if role == "code" else self._available
+            if not pool:
+                pool = self._available or []
+
+            # Walk preference list, pick first available in the right pool
             for pref in MODEL_PREFERENCES[role]:
-                if pref in self._available:
+                if pref in pool:
                     self._resolved[role] = pref
                     break
                 # Partial match — only when pref has no size tag (e.g. "deepseek-coder-v2"
                 # matches "deepseek-coder-v2:16b").  Never let a sized preference like
-                # "qwen2.5-coder:7b" silently resolve to a larger variant like :32b —
-                # that breaks the quick/reason separation and causes GPU contention.
+                # "qwen2.5-coder:7b" silently resolve to a larger variant like :32b.
                 pref_base, pref_size = (pref.split(":", 1) + [""])[:2]
                 if not pref_size:
-                    # Unsized pref — safe to partial-match against any available variant
-                    for avail in self._available:
+                    for avail in pool:
                         if pref_base in avail:
                             self._resolved[role] = avail
                             break
                 if role in self._resolved:
                     break
 
-            # Ultimate fallback — use whatever's available
-            if role not in self._resolved and self._available:
-                self._resolved[role] = self._available[0]
+            # Ultimate fallback — use whatever's available in that pool
+            if role not in self._resolved and pool:
+                self._resolved[role] = pool[0]
 
     def model_for(self, role):
         """Get the resolved model name for a role."""
@@ -136,22 +179,26 @@ class Engine:
         return self._resolved.get(role, self.pinned.get("code", "llama3.1:8b"))
 
     def print_model_map(self):
-        """Print which model is assigned to which role."""
+        """Print which model is assigned to which role and which host."""
         if not self._resolved:
             self._resolve_models()
+        dual = self.code_url != self.url
         print(f"\n  Model assignments:")
         for role in ("reason", "code", "quick"):
             model = self._resolved.get(role, "?")
             pinned = " (pinned)" if role in self.pinned else " (auto)"
-            print(f"    {role:<8} -> {model}{pinned}")
+            host = self.code_url if (dual and role == "code") else self.url
+            host_label = f"  [{host}]" if dual else ""
+            print(f"    {role:<8} -> {model}{pinned}{host_label}")
         print()
 
     # ── Generation ───────────────────────────────────────────────────────────
 
     def generate(self, prompt, *, role="code", temperature=None, num_ctx=None,
                  timeout=1800):
-        """Send prompt to Ollama. Model selected by role."""
+        """Send prompt to Ollama. Model + host selected by role."""
         model = self.model_for(role)
+        host = self.code_url if role == "code" else self.url
         data = {
             "model": model,
             "prompt": prompt,
@@ -162,7 +209,7 @@ class Engine:
             },
         }
         req = urllib.request.Request(
-            f"{self.url}/api/generate",
+            f"{host}/api/generate",
             json.dumps(data).encode("utf-8"),
             headers={"Content-Type": "application/json"},
         )
@@ -183,8 +230,9 @@ class Engine:
                 "num_ctx": num_ctx or CTX_DEFAULTS.get(role, 16384),
             },
         }
+        host = self.code_url if role == "code" else self.url
         req = urllib.request.Request(
-            f"{self.url}/api/chat",
+            f"{host}/api/chat",
             json.dumps(data).encode("utf-8"),
             headers={"Content-Type": "application/json"},
         )

@@ -131,6 +131,8 @@ def cmd_fix(args, engine, info, rules):
     if args.layer: cmd.extend(["--layer", args.layer])
     if args.file: cmd.extend(["--file", args.file])
     cmd.extend(["--ollama-url", args.url])
+    if hasattr(args, "code_url") and args.code_url != args.url:
+        cmd.extend(["--code-url", args.code_url])
     if args.timeout > 0:
         cmd.extend(["--timeout", str(args.timeout)])
     cmd.append(info["root"])
@@ -196,7 +198,8 @@ def cmd_all(args, engine, info, rules):
         log("  PHASE 5 — Apply Fixes")
         log("=" * 60)
         fix_cmd = [sys.executable, os.path.join(SCRIPT_DIR, "fix.py"),
-                   "--apply", "--ollama-url", args.url, info["root"]]
+                   "--apply", "--ollama-url", args.url,
+                   "--code-url", getattr(args, "code_url", args.url), info["root"]]
         if args.layer: fix_cmd.extend(["--layer", args.layer])
         subprocess.run(fix_cmd)
         phases.append("fix")
@@ -315,7 +318,9 @@ def main():
 
     # Global options
     parser.add_argument("--url", type=str, default="http://192.168.50.46:11434",
-                        help="Ollama URL (default: http://192.168.50.46:11434)")
+                        help="Ollama URL for quick+reason roles — TrueNAS (default: http://192.168.50.46:11434)")
+    parser.add_argument("--code-url", type=str, default="http://192.168.50.250:11434",
+                        help="Ollama URL for code role — gaming rig (default: http://192.168.50.250:11434)")
     parser.add_argument("--reason-model", type=str, help="Pin reasoning model")
     parser.add_argument("--code-model", type=str, help="Pin code model")
     parser.add_argument("--quick-model", type=str, help="Pin quick model")
@@ -346,7 +351,7 @@ def main():
     if args.code_model: models["code"] = args.code_model
     if args.quick_model: models["quick"] = args.quick_model
 
-    engine = Engine(url=args.url, models=models)
+    engine = Engine(url=args.url, models=models, code_url=args.code_url)
 
     log("=" * 60)
     log("  DROP — Project Scaffolder & Dev Toolkit")

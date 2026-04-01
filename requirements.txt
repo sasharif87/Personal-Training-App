@@ -32,6 +32,11 @@ python-multipart
 # Scheduling (daemon mode)
 apscheduler>=3.10
 
+# Database & file parsing
+psycopg2-binary>=2.9
+openpyxl>=3.1
+python-dateutil>=2.8
+
 # Development & analysis
 jupyterlab
 pytest

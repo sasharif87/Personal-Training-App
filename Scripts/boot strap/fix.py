@@ -105,6 +105,8 @@ def main():
     parser.add_argument("--timeout", type=int, default=0,
                         help="Seconds to wait at prompt before auto-proceeding with 'y'")
     parser.add_argument("--ollama-url", type=str, default="http://192.168.50.46:11434")
+    parser.add_argument("--code-url", type=str, default=None,
+                        help="Ollama URL for code role (gaming rig). Defaults to --ollama-url.")
     parser.add_argument("--code-model", type=str)
     parser.add_argument("project_dir", nargs="?", default=".")
     args = parser.parse_args()
@@ -114,7 +116,7 @@ def main():
 
     models = {}
     if args.code_model: models["code"] = args.code_model
-    engine = Engine(url=args.ollama_url, models=models)
+    engine = Engine(url=args.ollama_url, models=models, code_url=getattr(args, "code_url", None))
     ok, _, msg = engine.test()
     print(f"  Ollama: {msg}")
     if not ok: sys.exit(1)

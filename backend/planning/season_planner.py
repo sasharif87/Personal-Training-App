@@ -194,3 +194,168 @@ class SeasonPlanner:
         if transition:
             logger.info("Phase transition detected: %s → %s", current_stored_phase, new_phase)
         return transition, new_phase
+
+# ---------------------------------------------------------------------------
+# URL-Based Event Extraction
+# ---------------------------------------------------------------------------
+def extract_event_from_url(url: str, llm_client) -> dict:
+    """
+    Fetch event page and use LLM to extract race details.
+    Handles most structured race registration sites.
+    """
+    import requests
+    from bs4 import BeautifulSoup
+    from backend.planning.llm_prompts import EVENT_EXTRACTION_PROMPT
+    import json
+    
+    # Fetch page content
+    resp = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
+    soup = BeautifulSoup(resp.content, "html.parser")
+    
+    # Strip navigation, footers, scripts — keep main content
+    for tag in soup(["script", "style", "nav", "footer", "header"]):
+        tag.decompose()
+    
+    # Extract text with a strict token budget
+    text = soup.get_text(separator="\\n", strip=True)[:5000]
+    
+    extraction_prompt = f"{EVENT_EXTRACTION_PROMPT}\\n\\nPage content:\\n{text}"
+
+    # Use the passed LLM client
+    response_text = llm_client.generate(extraction_prompt)
+    
+    try:
+        # Strip trailing markdown if the model hallucinated code blocks around the JSON
+        clean_text = response_text.strip("```json").strip("```").strip()
+        event = json.loads(clean_text)
+    except json.JSONDecodeError:
+        logger.error(f"Failed to parse LLM response into JSON: {response_text}")
+        raise ValueError("LLM did not return valid JSON.")
+        
+    event["source_url"] = url
+    event["extracted_at"] = date.today().isoformat()
+    return event
+
+# ---------------------------------------------------------------------------
+# Database Logging
+# ---------------------------------------------------------------------------
+def classify_and_store_event(event: dict, priority: str) -> dict:
+    """
+    Store event with A/B/C priority and compute taper/recovery windows.
+    Generates a new race_calendar.md directly on export.
+    """
+    from backend.storage.postgres_client import db
+    
+    event_date = date.fromisoformat(event["date"])
+    event_format = event.get("format", "unknown")
+    taper_days, recovery_days = get_taper_recovery(priority, event_format)
+    
+    event.update({
+        "priority": priority,
+        "taper_start": (event_date - timedelta(days=taper_days)).isoformat(),
+        "recovery_end": (event_date + timedelta(days=recovery_days)).isoformat(),
+        "event_id": f"race_{event_date.strftime('%Y%m%d')}_{priority}"
+    })
+    
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS race_calendar (
+            event_id TEXT PRIMARY KEY,
+            name TEXT,
+            date DATE,
+            location TEXT,
+            sport TEXT,
+            format TEXT,
+            distance_label TEXT,
+            swim_distance_m NUMERIC,
+            bike_distance_km NUMERIC,
+            run_distance_km NUMERIC,
+            elevation_gain_m NUMERIC,
+            registration_deadline DATE,
+            event_url TEXT,
+            source_url TEXT,
+            extracted_at TIMESTAMPTZ,
+            priority TEXT,
+            taper_start DATE,
+            recovery_end DATE
+        )
+    """)
+    
+    db.execute("""
+        INSERT INTO race_calendar (
+            event_id, name, date, location, sport, format, distance_label,
+            swim_distance_m, bike_distance_km, run_distance_km, elevation_gain_m,
+            registration_deadline, event_url, source_url, extracted_at, priority, taper_start, recovery_end
+        ) VALUES (
+            %(event_id)s, %(name)s, %(date)s, %(location)s, %(sport)s, %(format)s, %(distance_label)s,
+            %(swim_distance_m)s, %(bike_distance_km)s, %(run_distance_km)s, %(elevation_gain_m)s,
+            %(registration_deadline)s, %(event_url)s, %(source_url)s, %(extracted_at)s, %(priority)s, %(taper_start)s, %(recovery_end)s
+        ) ON CONFLICT (event_id) DO UPDATE SET
+            priority = EXCLUDED.priority,
+            taper_start = EXCLUDED.taper_start,
+            recovery_end = EXCLUDED.recovery_end
+    """, event)
+    
+    export_race_calendar_md()   # regenerate human-readable .md on every update
+    return event
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+def get_taper_recovery(priority: str, race_format: str) -> tuple[int, int]:
+    """Return (taper_days, recovery_days) for priority + format combination."""
+    matrix = {
+        ("A", "Ironman"):     (14, 21),
+        ("A", "70.3"):        (12, 14),
+        ("A", "Olympic"):     (10, 7),
+        ("A", "marathon"):    (14, 14),
+        ("B", "Ironman"):     (7, 7),
+        ("B", "70.3"):        (5, 5),
+        ("B", "Olympic"):     (5, 3),
+        ("B", "marathon"):    (7, 5),
+        ("C", "Olympic"):     (2, 1),
+        ("C", "half_marathon"): (2, 1),
+    }
+    return matrix.get((priority, race_format), (7, 5))   # sensible default
+
+def export_race_calendar_md(output_path: str = "/data/imports/race_calendar.md") -> None:
+    """
+    Export current race calendar to Markdown.
+    Regenerated on every event add/update/reclassify.
+    """
+    from backend.storage.postgres_client import db
+    
+    try:
+        events = db.query("SELECT * FROM race_calendar ORDER BY date ASC")
+        
+        lines = [
+            "# Race Calendar\\n",
+            f"_Last updated: {date.today().isoformat()}_\\n\\n",
+            "| Date | Event | Format | Priority | Taper Starts | Recovery End |",
+            "|---|---|---|---|---|---|"
+        ]
+        
+        for e in events:
+            priority_label = {"A": "🔴 A", "B": "🟡 B", "C": "🟢 C"}.get(e.get("priority"), e.get("priority"))
+            lines.append(
+                f"| {e.get('date')} | {e.get('name')} | {e.get('format')} | {priority_label} "
+                f"| {e.get('taper_start')} | {e.get('recovery_end')} |"
+            )
+        
+        lines.append("\\n---\\n")
+        for e in events:
+            lines.append(f"## {e.get('name')} — {e.get('date')}")
+            lines.append(f"- **Location:** {e.get('location', 'TBC')}")
+            lines.append(f"- **Format:** {e.get('format')} ({e.get('distance_label', '')})")
+            lines.append(f"- **Priority:** {e.get('priority')}")
+            if e.get("swim_distance_m"): lines.append(f"- **Swim:** {e['swim_distance_m']}m")
+            if e.get("bike_distance_km"): lines.append(f"- **Bike:** {e['bike_distance_km']}km")
+            if e.get("run_distance_km"): lines.append(f"- **Run:** {e['run_distance_km']}km")
+            if e.get("elevation_gain_m"): lines.append(f"- **Elevation:** {e['elevation_gain_m']}m gain")
+            lines.append(f"- **Taper window:** {e.get('taper_start')} → {e.get('date')}")
+            lines.append(f"- **Recovery window:** {e.get('date')} → {e.get('recovery_end')}")
+            lines.append("")
+
+        with open(output_path, "w", encoding="utf-8") as f:
+            f.write("\\n".join(lines))
+    except Exception as e:
+        logger.error(f"Failed to export race calendar: {e}")
