@@ -1,0 +1,38 @@
+/* frontend/src/styles/variables.css */
+:root {
+  /* Colors - Premium Dark Palette */
+  --bg-dark: #07090f;
+  --bg-surface: #0f1117;
+  --bg-glass: rgba(26, 29, 39, 0.45);
+  --bg-glass-bright: rgba(255, 255, 255, 0.05);
+
+  --accent-primary: #4f7cff;
+  --accent-primary-dim: rgba(79, 124, 255, 0.15);
+  --accent-secondary: #ff4f9a; /* Deep Pink for Highlights */
+  
+  --text-main: #e0e2f0;
+  --text-dim: #7b7f9e;
+  --text-muted: #535770;
+
+  --success: #3dd68c;
+  --warning: #f5a623;
+  --error: #ff4d4d;
+
+  --border: rgba(46, 49, 71, 0.4);
+  --border-bright: rgba(224, 226, 240, 0.1);
+
+  /* Glassmorphism Effect */
+  --blur: blur(12px);
+  --shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+
+  /* Spacing */
+  --space-xs: 4px;
+  --space-sm: 8px;
+  --space-md: 16px;
+  --space-lg: 24px;
+  --space-xl: 32px;
+
+  /* Typography */
+  --font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  --font-size-base: 14px;
+}

@@ -25,6 +25,7 @@ from typing import Any, Dict, List
 
 from fastapi import FastAPI, Form, Request, UploadFile, File
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 
 from backend.config_manager import ConfigManager, BLOCK_PHASES, RACE_FORMATS, RACE_PRIORITIES
 from backend.library.workout_library import WorkoutLibrary
@@ -44,15 +45,25 @@ def _get_library() -> WorkoutLibrary:
 
 
 # ---------------------------------------------------------------------------
-# GET / — config form
+# Static Assets & SPA Entry
 # ---------------------------------------------------------------------------
+# Mount the frontend directory so Vite's /src/main.js etc are accessible
+app.mount("/src", StaticFiles(directory="frontend/src"), name="src")
+app.mount("/styles", StaticFiles(directory="frontend/src/styles"), name="styles")
+
 @app.get("/", response_class=HTMLResponse)
-async def index(saved: str = ""):
-    config = cfg.load()
-    banner = ""
-    if saved == "1":
-        banner = '<div class="banner">Config saved.</div>'
-    return HTMLResponse(_render_page(config, banner))
+async def index():
+    index_path = Path("frontend/index.html")
+    if not index_path.exists():
+        return HTMLResponse("Frontend not initialized. Run Vite setup.", status_code=500)
+    return HTMLResponse(index_path.read_text())
+
+
+@app.get("/workouts", response_class=HTMLResponse)
+async def workouts_redirect():
+    # In SPA mode, we just redirect to the root and let the JS router handle it
+    # or just serve the same index.html
+    return HTMLResponse(Path("frontend/index.html").read_text())
 
 
 # ---------------------------------------------------------------------------
@@ -451,338 +462,4 @@ async def get_season_plan():
         return JSONResponse({"error": str(exc)}, status_code=500)
 
 
-# ---------------------------------------------------------------------------
-# HTML renderer — workouts page
-# ---------------------------------------------------------------------------
-def _render_page(config: dict, banner: str = "") -> str:
-    a = config.get("athlete", {})
-    b = config.get("block", {})
-    ra = config.get("race_a", {})
-    rb = config.get("race_b", {})
-
-    def phase_opts(selected):
-        return "\n".join(
-            f'<option value="{p}" {"selected" if p == selected else ""}>{p}</option>'
-            for p in BLOCK_PHASES
-        )
-
-    def format_opts(selected):
-        return "\n".join(
-            f'<option value="{f}" {"selected" if f == selected else ""}>{f}</option>'
-            for f in [""] + RACE_FORMATS
-        )
-
-    def priority_opts(selected):
-        return "\n".join(
-            f'<option value="{p}" {"selected" if p == selected else ""}>{p}</option>'
-            for p in RACE_PRIORITIES
-        )
-
-    weeks_to_race = ""
-    if ra.get("date"):
-        try:
-            delta = (date.fromisoformat(ra["date"]) - date.today()).days
-            weeks = delta // 7
-            weeks_to_race = f'<p class="hint">{weeks} weeks to race A from today</p>' if weeks >= 0 else '<p class="hint warn">Race date is in the past</p>'
-        except ValueError:
-            pass
-
-    return f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>AI Coach — Season Config</title>
-<style>
-  :root {{
-    --bg: #0f1117;
-    --surface: #1a1d27;
-    --border: #2e3147;
-    --accent: #4f7cff;
-    --text: #e0e2f0;
-    --muted: #7b7f9e;
-    --green: #3dd68c;
-    --warn: #f5a623;
-  }}
-  * {{ box-sizing: border-box; margin: 0; padding: 0; }}
-  body {{ background: var(--bg); color: var(--text); font-family: system-ui, sans-serif;
-         font-size: 15px; line-height: 1.6; }}
-  .wrap {{ max-width: 680px; margin: 0 auto; padding: 32px 20px 60px; }}
-  h1 {{ font-size: 1.3rem; font-weight: 600; color: var(--accent); margin-bottom: 4px; }}
-  .subtitle {{ color: var(--muted); font-size: 0.85rem; margin-bottom: 28px; }}
-  .banner {{ background: var(--green); color: #0a1a12; border-radius: 6px;
-             padding: 10px 16px; margin-bottom: 20px; font-weight: 500; }}
-  section {{ background: var(--surface); border: 1px solid var(--border);
-             border-radius: 10px; padding: 24px; margin-bottom: 20px; }}
-  section h2 {{ font-size: 0.78rem; text-transform: uppercase; letter-spacing: .08em;
-                color: var(--muted); margin-bottom: 18px; }}
-  .row {{ display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }}
-  .field {{ display: flex; flex-direction: column; gap: 6px; }}
-  .field.full {{ grid-column: 1 / -1; }}
-  label {{ font-size: 0.82rem; color: var(--muted); }}
-  input, select, textarea {{
-    background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
-    color: var(--text); font-size: 0.95rem; padding: 8px 12px; width: 100%;
-    outline: none; transition: border-color .15s;
-  }}
-  input:focus, select:focus, textarea:focus {{ border-color: var(--accent); }}
-  textarea {{ resize: vertical; min-height: 72px; }}
-  .hint {{ font-size: 0.8rem; color: var(--muted); margin-top: 6px; }}
-  .hint.warn {{ color: var(--warn); }}
-  .actions {{ display: flex; gap: 12px; align-items: center; margin-top: 8px; }}
-  button[type=submit] {{
-    background: var(--accent); color: #fff; border: none; border-radius: 6px;
-    padding: 10px 28px; font-size: 0.95rem; font-weight: 600; cursor: pointer;
-    transition: opacity .15s;
-  }}
-  button[type=submit]:hover {{ opacity: .85; }}
-  a.status-link {{ color: var(--muted); font-size: 0.85rem; text-decoration: none; }}
-  a.status-link:hover {{ color: var(--text); }}
-</style>
-</head>
-<body>
-<div class="wrap">
-  <h1>AI Coach — Season Config</h1>
-  <p class="subtitle">Changes take effect on the next pipeline run (3 AM or manual trigger)</p>
-  {banner}
-
-  <form method="post" action="/save">
-
-    <section>
-      <h2>Athlete</h2>
-      <div class="row">
-        <div class="field">
-          <label for="ftp">FTP (Watts)</label>
-          <input type="number" id="ftp" name="athlete_ftp" value="{a.get('ftp', 250)}" min="50" max="600" required>
-        </div>
-        <div class="field">
-          <label for="css">CSS (pace / 100m, e.g. 1:45/100m)</label>
-          <input type="text" id="css" name="athlete_css" value="{a.get('css', '1:45/100m')}" placeholder="1:45/100m" required>
-        </div>
-        <div class="field">
-          <label for="lthr">LTHR Run (BPM)</label>
-          <input type="number" id="lthr" name="athlete_lthr_run" value="{a.get('lthr_run', 162)}" min="100" max="220" required>
-        </div>
-      </div>
-    </section>
-
-    <section>
-      <h2>Training Block</h2>
-      <div class="row">
-        <div class="field">
-          <label for="phase">Phase</label>
-          <select id="phase" name="block_phase">
-            {phase_opts(b.get('phase', 'Base'))}
-          </select>
-        </div>
-        <div class="field">
-          <label for="week">Week in Block</label>
-          <input type="number" id="week" name="block_week" value="{b.get('week_in_block', 1)}" min="1" max="24" required>
-        </div>
-      </div>
-    </section>
-
-    <section>
-      <h2>Race A — Peak Event</h2>
-      <div class="row">
-        <div class="field">
-          <label for="ra_date">Date</label>
-          <input type="date" id="ra_date" name="race_a_date" value="{ra.get('date', '')}">
-        </div>
-        <div class="field">
-          <label for="ra_format">Format</label>
-          <select id="ra_format" name="race_a_format">
-            {format_opts(ra.get('format', 'Olympic'))}
-          </select>
-        </div>
-        <div class="field">
-          <label for="ra_priority">Priority</label>
-          <select id="ra_priority" name="race_a_priority">
-            {priority_opts(ra.get('priority', 'A'))}
-          </select>
-        </div>
-      </div>
-      {weeks_to_race}
-    </section>
-
-    <section>
-      <h2>Race B — Optional</h2>
-      <div class="row">
-        <div class="field">
-          <label for="rb_date">Date</label>
-          <input type="date" id="rb_date" name="race_b_date" value="{rb.get('date', '')}">
-        </div>
-        <div class="field">
-          <label for="rb_format">Format</label>
-          <select id="rb_format" name="race_b_format">
-            {format_opts(rb.get('format', ''))}
-          </select>
-        </div>
-        <div class="field">
-          <label for="rb_priority">Priority</label>
-          <select id="rb_priority" name="race_b_priority">
-            {priority_opts(rb.get('priority', 'B'))}
-          </select>
-        </div>
-      </div>
-    </section>
-
-    <section>
-      <h2>Notes</h2>
-      <div class="field full">
-        <label for="notes">Season notes / context for the LLM</label>
-        <textarea id="notes" name="notes" placeholder="e.g. Coming back from 2-week illness. Base build. Conservative ramp.">{config.get('notes', '')}</textarea>
-      </div>
-    </section>
-
-    <div class="actions">
-      <button type="submit">Save Config</button>
-      <a class="status-link" href="/workouts">Browse workout library →</a>
-      <a class="status-link" href="/status" target="_blank">Fitness status →</a>
-    </div>
-
-  </form>
-</div>
-</body>
-</html>"""
-
-
-def _render_workouts_page(sessions, summary: Dict, sport: str, search: str, banner: str) -> str:
-    sport_counts = "  ".join(
-        f'<a class="sport-pill {"active" if sport == s else ""}" href="/workouts?sport={s}">'
-        f'{s.title()} <span>{n}</span></a>'
-        for s, n in sorted(summary.items())
-    )
-
-    rows = ""
-    for s in sorted(sessions, key=lambda x: (x.sport, x.title)):
-        tags_html = " ".join(
-            f'<span class="tag">{t.strip()}</span>'
-            for t in s.rationale.split(",") if t.strip()
-        )
-        rows += f"""
-        <tr>
-          <td><span class="sport-badge {s.sport}">{s.sport}</span></td>
-          <td class="title">{s.title}</td>
-          <td>{s.description[:90]}{"…" if len(s.description) > 90 else ""}</td>
-          <td class="tss">{s.estimated_tss:.0f}</td>
-          <td>{len(s.steps)}</td>
-          <td>{tags_html}</td>
-        </tr>"""
-
-    return f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>AI Coach — Workout Library</title>
-<style>
-  :root {{
-    --bg: #0f1117; --surface: #1a1d27; --border: #2e3147;
-    --accent: #4f7cff; --text: #e0e2f0; --muted: #7b7f9e;
-    --green: #3dd68c; --warn: #f5a623;
-  }}
-  * {{ box-sizing: border-box; margin: 0; padding: 0; }}
-  body {{ background: var(--bg); color: var(--text); font-family: system-ui, sans-serif;
-         font-size: 14px; line-height: 1.5; }}
-  .wrap {{ max-width: 1100px; margin: 0 auto; padding: 28px 20px 60px; }}
-  h1 {{ font-size: 1.2rem; color: var(--accent); margin-bottom: 4px; }}
-  .subtitle {{ color: var(--muted); font-size: 0.82rem; margin-bottom: 20px; }}
-  .banner {{ background: var(--green); color: #0a1a12; border-radius: 6px;
-             padding: 10px 16px; margin-bottom: 16px; font-weight: 500; }}
-  .toolbar {{ display: flex; gap: 12px; flex-wrap: wrap; align-items: center;
-              margin-bottom: 18px; }}
-  .sport-pill {{ background: var(--surface); border: 1px solid var(--border); border-radius: 20px;
-                 padding: 5px 14px; color: var(--muted); text-decoration: none; font-size: 0.82rem; }}
-  .sport-pill:hover, .sport-pill.active {{ border-color: var(--accent); color: var(--accent); }}
-  .sport-pill span {{ opacity: .6; }}
-  .search-box {{ flex: 1; min-width: 180px; background: var(--surface);
-                 border: 1px solid var(--border); border-radius: 6px;
-                 color: var(--text); padding: 6px 12px; font-size: 0.9rem; outline: none; }}
-  .search-box:focus {{ border-color: var(--accent); }}
-  .upload-btn {{ background: var(--surface); border: 1px solid var(--border);
-                 color: var(--muted); border-radius: 6px; padding: 6px 14px;
-                 font-size: 0.82rem; cursor: pointer; }}
-  .upload-btn:hover {{ border-color: var(--accent); color: var(--accent); }}
-  table {{ width: 100%; border-collapse: collapse; }}
-  th {{ text-align: left; font-size: 0.72rem; text-transform: uppercase;
-        letter-spacing: .06em; color: var(--muted); padding: 0 10px 10px; }}
-  td {{ padding: 10px; border-top: 1px solid var(--border); vertical-align: middle; }}
-  tr:hover td {{ background: var(--surface); }}
-  td.title {{ font-weight: 500; color: var(--text); }}
-  td.tss {{ font-weight: 600; color: var(--accent); text-align: right; }}
-  .sport-badge {{ display: inline-block; border-radius: 4px; padding: 2px 8px;
-                  font-size: 0.72rem; font-weight: 600; text-transform: uppercase; }}
-  .sport-badge.swim {{ background: #1a3a5c; color: #5bc0f8; }}
-  .sport-badge.run  {{ background: #1a3a2a; color: #3dd68c; }}
-  .sport-badge.bike {{ background: #3a2a1a; color: #f5a623; }}
-  .sport-badge.brick{{ background: #2a1a3a; color: #a78bfa; }}
-  .tag {{ background: var(--border); border-radius: 4px; padding: 1px 6px;
-          font-size: 0.70rem; color: var(--muted); margin-right: 3px; }}
-  .upload-form {{ display: none; position: fixed; inset: 0; background: rgba(0,0,0,.6);
-                  align-items: center; justify-content: center; z-index: 100; }}
-  .upload-form.show {{ display: flex; }}
-  .upload-card {{ background: var(--surface); border: 1px solid var(--border);
-                  border-radius: 12px; padding: 28px; width: 420px; }}
-  .upload-card h2 {{ font-size: 1rem; margin-bottom: 16px; }}
-  .upload-card p {{ color: var(--muted); font-size: 0.82rem; margin-bottom: 20px; }}
-  .upload-card input[type=file] {{ width: 100%; margin-bottom: 16px;
-                                   color: var(--muted); font-size: 0.9rem; }}
-  .btn-row {{ display: flex; gap: 10px; }}
-  .btn-primary {{ background: var(--accent); color: #fff; border: none; border-radius: 6px;
-                  padding: 9px 20px; font-weight: 600; cursor: pointer; }}
-  .btn-cancel  {{ background: transparent; border: 1px solid var(--border); color: var(--muted);
-                  border-radius: 6px; padding: 9px 16px; cursor: pointer; }}
-  .back {{ color: var(--muted); font-size: 0.82rem; text-decoration: none; }}
-  .back:hover {{ color: var(--text); }}
-</style>
-</head>
-<body>
-<div class="wrap">
-  <a class="back" href="/">← Season config</a>
-  <h1 style="margin-top:12px">Workout Library</h1>
-  <p class="subtitle">{len(sessions)} workouts shown · Drop .zwo (TrainerRoad/Zwift) or .tcx (TrainingPeaks) to import</p>
-  {banner}
-
-  <div class="toolbar">
-    <a class="sport-pill {"active" if not sport and not search else ""}" href="/workouts">All</a>
-    {sport_counts}
-    <form method="get" action="/workouts" style="display:contents">
-      <input class="search-box" name="search" value="{search}" placeholder="Search by name…">
-    </form>
-    <button class="upload-btn" onclick="document.getElementById('uploadModal').classList.add('show')">
-      + Import file
-    </button>
-  </div>
-
-  <table>
-    <thead>
-      <tr>
-        <th>Sport</th><th>Title</th><th>Description</th>
-        <th style="text-align:right">TSS</th><th>Steps</th><th>Tags</th>
-      </tr>
-    </thead>
-    <tbody>{rows}</tbody>
-  </table>
-</div>
-
-<!-- Upload modal -->
-<div class="upload-form" id="uploadModal">
-  <div class="upload-card">
-    <h2>Import Workout File</h2>
-    <p>Supports .zwo (TrainerRoad/Zwift) and .tcx (TrainingPeaks).<br>
-       Files are saved to the imports folder and indexed immediately.</p>
-    <form method="post" action="/workouts/upload" enctype="multipart/form-data">
-      <input type="file" name="file" accept=".zwo,.tcx" required>
-      <div class="btn-row">
-        <button type="submit" class="btn-primary">Import</button>
-        <button type="button" class="btn-cancel"
-                onclick="document.getElementById('uploadModal').classList.remove('show')">
-          Cancel
-        </button>
-      </div>
-    </form>
-  </div>
-</div>
-</body>
-</html>"""
+# Removed legacy _render functions. Everything is now handled by the SPA in /frontend.
