@@ -280,6 +280,8 @@ def main():
     parser.add_argument("--file", type=str)
     parser.add_argument("--skip-consolidation", action="store_true")
     parser.add_argument("--ollama-url", type=str, default="http://192.168.50.46:11434")
+    parser.add_argument("--code-url", type=str, default="http://192.168.50.250:11434",
+                        help="Ollama URL for code role (gaming rig)")
     parser.add_argument("--code-model", type=str, help="Pin review model")
     parser.add_argument("--reason-model", type=str, help="Pin consolidation model")
     parser.add_argument("project_dir", nargs="?", default=".")
@@ -289,7 +291,7 @@ def main():
     if args.code_model: models["code"] = args.code_model
     if args.reason_model: models["reason"] = args.reason_model
 
-    engine = Engine(url=args.ollama_url, models=models)
+    engine = Engine(url=args.ollama_url, code_url=args.code_url, models=models)
     ok, _, msg = engine.test()
     print(f"  Ollama: {msg}")
     if not ok: sys.exit(1)

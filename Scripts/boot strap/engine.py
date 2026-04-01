@@ -78,7 +78,8 @@ TEMP_DEFAULTS = {
 # ---------------------------------------------------------------------------
 class Engine:
 
-    def __init__(self, url="http://192.168.50.46:11434", models=None, code_url=None):
+    def __init__(self, url="http://192.168.50.46:11434",
+                 code_url="http://192.168.50.250:11434", models=None):
         """
         Args:
             url:      Ollama URL for quick + reason roles.
