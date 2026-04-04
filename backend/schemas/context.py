@@ -45,3 +45,16 @@ class ContextAssembler(BaseModel):
     yesterday_actual: Dict[str, Any]
     retrieved_history: List[Dict[str, Any]] = Field(default_factory=list)
     ftp_advisory: Optional[str] = None
+    # Enrichment fields — populated when available, omitted from prompt when None
+    weather: Optional[Dict[str, Any]] = Field(
+        None, description="7-day weather context from WeatherService"
+    )
+    injury_flags: Optional[Dict[str, Any]] = Field(
+        None, description="ACWR, recurring pain, and risk level from InjuryTracker"
+    )
+    cycle_notes: Optional[str] = Field(
+        None, description="Cycle-phase training notes (None if not tracked or N/A)"
+    )
+    medication_annotations: Optional[List[str]] = Field(
+        None, description="Medication-aware coaching flags e.g. disable HR zones"
+    )

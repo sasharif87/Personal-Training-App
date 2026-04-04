@@ -23,8 +23,11 @@ from backend.config_manager import ConfigManager
 from backend.storage.influx_client import InfluxClient
 from backend.storage.postgres_client import PostgresClient
 from backend.orchestration.llm_client import OllamaClient, build_weekly_review_context
+from backend.orchestration.notifier import Notifier
 from backend.analysis.fitness_models import calculate_ctl_atl_tsb
 from backend.analysis.execution_scoring import summarise_week, score_execution, score_missed_session
+from backend.analysis.nutrition_engine import generate_fueling_targets
+from backend.data_ingestion.weather_service import WeatherService
 from backend.schemas.workout import WeekPlan
 from backend.output.garmin_push import GarminPush
 from backend.output.zwift_writer import ZwiftWriter
@@ -40,6 +43,7 @@ class WeeklyPipeline:
         llm: Optional[OllamaClient] = None,
         garmin_push: Optional[GarminPush] = None,
         zwift: Optional[ZwiftWriter] = None,
+        notifier: Optional[Notifier] = None,
         config: Optional[ConfigManager] = None,
     ):
         self.influx = influx or InfluxClient()
@@ -50,6 +54,7 @@ class WeeklyPipeline:
         )
         self.garmin_push = garmin_push or GarminPush()
         self.zwift = zwift or ZwiftWriter()
+        self.notifier = notifier or Notifier()
         self.cfg = config or ConfigManager()
 
     def run(self, dry_run: bool = False) -> WeekPlan:
@@ -72,7 +77,7 @@ class WeeklyPipeline:
         planned = self.postgres.get_planned_sessions(
             prior_week_start.isoformat(), prior_week_end.isoformat()
         )
-        actual_activities = self.influx.get_yesterday_activities()  # last 7 days effectively
+        actual_activities = self.influx.get_yesterday_activities(days=8)
         prior_scores = _match_and_score(planned, actual_activities)
         prior_summary = summarise_week(prior_scores)
         logger.info("Prior week: %s", prior_summary)
@@ -88,10 +93,21 @@ class WeeklyPipeline:
 
         fitness = {"ctl": round(ctl, 1), "atl": round(atl, 1), "tsb": round(tsb, 1), "hrv_trend": hrv}
 
+        # --- Weather context for next 7 days ---
+        weather_ctx = None
+        try:
+            lat = float(os.environ.get("HOME_LATITUDE", "0") or 0)
+            lon = float(os.environ.get("HOME_LONGITUDE", "0") or 0)
+            if lat != 0 or lon != 0:
+                weather_ctx = WeatherService(latitude=lat, longitude=lon).get_weekly_weather_context()
+        except Exception as exc:
+            logger.warning("Weather fetch failed (non-fatal): %s", exc)
+
         context = build_weekly_review_context(
             coming_week=coming_week,
             prior_week_execution=prior_summary,
             fitness_state=fitness,
+            weather=weather_ctx,
         )
 
         # --- LLM call ---
@@ -110,8 +126,18 @@ class WeeklyPipeline:
             raw.get("changes_rationale", "none")[:120],
         )
 
+        # --- Fueling targets for long sessions ---
+        _annotate_fueling_targets(revised_week)
+
         if not dry_run:
             _push_week(revised_week, self.garmin_push, self.zwift, self.cfg)
+            self.notifier.weekly_summary({
+                "sessions_completed": prior_summary.get("sessions_completed", 0),
+                "sessions_missed": prior_summary.get("sessions_missed", 0),
+                "week_tss_ratio": prior_summary.get("week_tss_ratio", 0),
+                "total_actual_tss": prior_summary.get("total_actual_tss", 0),
+                "flag_summary": prior_summary.get("flag_summary", {}),
+            })
 
         return revised_week
 
@@ -122,7 +148,6 @@ class WeeklyPipeline:
 
 def _match_and_score(planned_sessions, actual_activities):
     """Simple date+sport matching between planned sessions and actual activities."""
-    from backend.analysis.execution_scoring import score_execution, score_missed_session
     from backend.schemas.workout import ExecutionScore
 
     scores = []
@@ -140,6 +165,32 @@ def _match_and_score(planned_sessions, actual_activities):
             scores.append(score_missed_session(planned))
 
     return scores
+
+
+def _annotate_fueling_targets(week: WeekPlan) -> None:
+    """
+    Attach fueling notes to the rationale of sessions over 90 minutes.
+    Only annotates — does not modify training targets.
+    """
+    sessions = week.sessions or [day.primary for day in (week.days or []) if day.primary]
+    for session in sessions:
+        if not session:
+            continue
+        duration_min = sum(
+            (step.duration_sec or 0) for step in session.steps
+        ) / 60.0
+        if duration_min >= 90:
+            targets = generate_fueling_targets(
+                duration_min=duration_min,
+                sport=session.sport,
+                intensity="moderate",
+            )
+            fueling_note = (
+                f"Fueling: {targets.carb_target_g_per_hr:.0f}g carbs/hr, "
+                f"{targets.fluid_target_ml_per_hr:.0f}ml fluid/hr, "
+                f"{targets.sodium_target_mg_per_hr:.0f}mg sodium/hr. {targets.notes}"
+            )
+            session.rationale = f"{session.rationale}\n\n{fueling_note}"
 
 
 def _push_week(week: WeekPlan, garmin: GarminPush, zwift: ZwiftWriter, cfg: ConfigManager):

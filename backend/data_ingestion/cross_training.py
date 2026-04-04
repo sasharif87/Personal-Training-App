@@ -9,10 +9,10 @@ import json
 from typing import Dict, Optional
 
 from backend.storage.postgres_client import db
-from backend.analysis.execution_scoring import (
+from backend.analysis.tss_calculators import (
     calculate_strength_tss,
     calculate_climb_tss,
-    calculate_yoga_tss
+    calculate_yoga_tss,
 )
 
 GARMIN_CROSS_TRAINING_MAP = {
@@ -31,23 +31,7 @@ def log_strength_session(session: dict) -> None:
     Schema: strength_sessions table.
     """
     tss = calculate_strength_tss(session.get("exercises", []), session.get("duration_min", 0))
-    
-    # Needs to match actual schema. For now, creating it on the fly if missing or using execute
-    db.execute("""
-        CREATE TABLE IF NOT EXISTS strength_sessions (
-            session_date DATE,
-            type TEXT,
-            subtype TEXT,
-            duration_min NUMERIC,
-            planned_tss NUMERIC,
-            actual_tss NUMERIC,
-            exercises JSONB,
-            notes TEXT,
-            rpe_avg NUMERIC,
-            recovery_impact TEXT
-        )
-    """)
-    
+
     exercises = session.get("exercises", [])
     rpe_avg = sum(e.get("rpe", 7) for e in exercises) / len(exercises) if exercises else None
     

@@ -61,8 +61,12 @@ def run_pipeline(dry_run: bool = False, skip_sync: bool = False) -> int:
     from backend.orchestration.daily_pipeline import DailyPipeline
     pipeline = DailyPipeline()
     try:
-        plan = pipeline.run(skip_sync=skip_sync, dry_run=dry_run)
-        logger.info("Pipeline succeeded — week %d, %d sessions", plan.week_number, len(plan.sessions))
+        result = pipeline.run(skip_sync=skip_sync, dry_run=dry_run)
+        logger.info(
+            "Pipeline succeeded — status=%s recommendation=%s",
+            result.get("status", "ok"),
+            result.get("recommendation", "n/a"),
+        )
         return 0
     except Exception as exc:
         logger.error("Daily Pipeline failed: %s", exc, exc_info=True)

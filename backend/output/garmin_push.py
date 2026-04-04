@@ -1,12 +1,14 @@
 # backend/output/garmin_push.py
 """
-GarminPush — writes structured workout definitions to Garmin Connect via garth.
+GarminPush — writes structured workout definitions to Garmin Connect.
 
-Uses the unofficial Garmin Connect workout API (same endpoint the website uses).
-Workouts appear in the Garmin Connect calendar and sync to the watch overnight.
+Uses python-garminconnect (the `garminconnect` package) instead of garth directly.
+The library handles OAuth2 token management and API calls to the unofficial
+Garmin Connect workout endpoints.
 
-Risk note (from architecture doc): the Connect API is unofficial and has broken
-periodically with authentication changes. garth handles token refresh automatically.
+Tokens are stored in GARTH_HOME as a directory (same location used by garmindb
+for interop). On first run, provide GARMIN_USERNAME + GARMIN_PASSWORD in the
+environment; subsequent runs load the saved tokens automatically.
 
 Garmin workout payload format:
   {
@@ -17,17 +19,7 @@ Garmin workout payload format:
       {
         "segmentOrder": 1,
         "sportType": {...},
-        "workoutSteps": [
-          {
-            "stepOrder": 1,
-            "stepType": {"stepTypeId": 1, "stepTypeKey": "warmup"},
-            "durationType": {"durationTypeId": 1, "durationTypeKey": "time"},
-            "durationValue": 600,
-            "targetType": {"workoutTargetTypeId": 2, "workoutTargetTypeKey": "pace.zone"},
-            "targetValueOne": <pace_low_mpm>,
-            "targetValueTwo": <pace_high_mpm>
-          }
-        ]
+        "workoutSteps": [...]
       }
     ]
   }
@@ -35,6 +27,7 @@ Garmin workout payload format:
 
 import os
 import logging
+from pathlib import Path
 from typing import Optional
 
 from backend.schemas.workout import Session, WorkoutStep
@@ -72,35 +65,47 @@ _TARGET_HR_ZONE    = {"workoutTargetTypeId": 4,  "workoutTargetTypeKey": "heart.
 # GarminPush
 # ---------------------------------------------------------------------------
 class GarminPush:
-    def __init__(self, garth_home: Optional[str] = None):
-        self.garth_home = garth_home or os.environ.get("GARTH_HOME", "/data/garth")
-        self._garth = None
+    def __init__(self, token_store: Optional[str] = None):
+        self.token_store = Path(token_store or os.environ.get("GARTH_HOME", "/data/garth"))
+        self.token_store.mkdir(parents=True, exist_ok=True)
+        self._client = None
 
     # -----------------------------------------------------------------------
-    # garth client (lazy-init)
+    # garminconnect client (lazy-init, tokens persisted to token_store)
     # -----------------------------------------------------------------------
-    def _get_garth(self):
-        if self._garth is not None:
-            return self._garth
+    def _get_client(self):
+        if self._client is not None:
+            return self._client
+
         try:
-            import garth
+            from garminconnect import Garmin
         except ImportError:
-            raise RuntimeError("garth is not installed — add it to requirements.txt")
+            raise RuntimeError("garminconnect is not installed — add it to requirements.txt")
 
-        from pathlib import Path
-        token_file = Path(self.garth_home) / "oauth2_token"
-        if token_file.exists():
-            garth.resume(self.garth_home)
-        else:
-            username = os.environ.get("GARMIN_USERNAME")
-            password = os.environ.get("GARMIN_PASSWORD")
-            if not username or not password:
-                raise RuntimeError("GARMIN_USERNAME / GARMIN_PASSWORD not set and no saved garth tokens")
-            garth.login(username, password)
-            garth.save(self.garth_home)
+        token_dir = str(self.token_store)
+        # Try loading saved OAuth tokens first
+        if any(self.token_store.iterdir()) if self.token_store.exists() else False:
+            try:
+                client = Garmin(tokenstore=token_dir)
+                client.login()
+                self._client = client
+                return self._client
+            except Exception as exc:
+                logger.warning("Token load failed (%s) — falling back to credential login", exc)
 
-        self._garth = garth
-        return garth
+        # Fresh login with credentials
+        username = os.environ.get("GARMIN_USERNAME")
+        password = os.environ.get("GARMIN_PASSWORD")
+        if not username or not password:
+            raise RuntimeError(
+                "No saved Garmin tokens and GARMIN_USERNAME/GARMIN_PASSWORD not set"
+            )
+        client = Garmin(email=username, password=password)
+        client.login()
+        client.garth.dump(token_dir)
+        logger.info("Garmin Connect authenticated and tokens saved to %s", token_dir)
+        self._client = client
+        return self._client
 
     # -----------------------------------------------------------------------
     # Push a single session to Garmin Connect
@@ -113,16 +118,12 @@ class GarminPush:
         athlete_ftp: Watts (used to convert FTP fractions to absolute power)
         athlete_css_mps: CSS in m/s (used to convert CSS fractions to pace)
         """
-        garth = self._get_garth()
+        client = self._get_client()
         payload = _build_garmin_payload(session, athlete_ftp, athlete_css_mps)
 
         logger.info("Pushing workout '%s' to Garmin Connect", session.title)
         try:
-            response = garth.connectapi(
-                "POST",
-                "/workout-service/workout",
-                json=payload,
-            )
+            response = client.add_workout(payload)
         except Exception as exc:
             logger.error("Garmin Connect push failed: %s", exc)
             raise
@@ -139,13 +140,9 @@ class GarminPush:
         Schedules a workout to appear on a specific date in the Garmin Connect calendar.
         date_str: 'YYYY-MM-DD'
         """
-        garth = self._get_garth()
+        client = self._get_client()
         try:
-            garth.connectapi(
-                "POST",
-                f"/workout-service/schedule/{workout_id}",
-                json={"date": date_str},
-            )
+            client.schedule_workout(workout_id, date_str)
             logger.info("Scheduled workout %s on %s", workout_id, date_str)
         except Exception as exc:
             logger.error("Failed to schedule workout %s: %s", workout_id, exc)

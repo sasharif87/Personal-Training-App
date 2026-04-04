@@ -9,7 +9,7 @@ python-dotenv
 
 # Data ingestion
 garmindb
-garth
+garminconnect
 
 # Time-series storage
 influxdb-client

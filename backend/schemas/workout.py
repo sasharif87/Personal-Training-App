@@ -85,6 +85,7 @@ class MonthPlan(BaseModel):
 class PlannedSession(BaseModel):
     session_id: str = Field(..., description="UUID or platform-native ID")
     source_platform: str = Field(..., description="trainingpeaks | trainerroad | zwift | garmin | system")
+    import_method: str = Field("unknown", description="api | file_watch | manual_upload | fit_name_lookup | unknown")
     planned_date: str = Field(..., description="ISO date YYYY-MM-DD")
     sport: str
     title: str

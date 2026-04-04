@@ -17,7 +17,7 @@ Steps:
 
 import logging
 import os
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from typing import Optional
 
 from backend.config_manager import ConfigManager
@@ -30,7 +30,6 @@ from backend.orchestration.llm_client import (
 )
 from backend.analysis.fitness_models import calculate_ctl_atl_tsb
 from backend.schemas.workout import MonthPlan
-from backend.schemas.context import AthleteState, RaceEvent, TrainingBlock
 
 logger = logging.getLogger(__name__)
 
@@ -120,7 +119,7 @@ class MonthlyPipeline:
 
         if not dry_run:
             plan_dict = plan.model_dump()
-            plan_dict["generated_at"] = datetime.utcnow().isoformat()
+            plan_dict["generated_at"] = datetime.now(timezone.utc).isoformat()
             self.postgres.save_monthly_plan(plan_dict)
             logger.info("Monthly plan stored in PostgreSQL")
 

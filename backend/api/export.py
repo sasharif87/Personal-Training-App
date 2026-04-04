@@ -24,7 +24,7 @@ import json
 import logging
 import os
 import zipfile
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -118,7 +118,7 @@ class DataExporter:
 
             # Export metadata
             zf.writestr("export_metadata.json", json.dumps({
-                "exported_at": datetime.utcnow().isoformat(),
+                "exported_at": datetime.now(timezone.utc).isoformat(),
                 "export_version": "1.0",
                 "system": "AI Coaching System",
             }, indent=2))

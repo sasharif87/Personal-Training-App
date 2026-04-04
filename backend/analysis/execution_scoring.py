@@ -13,7 +13,7 @@ Also provides aggregate weekly/monthly execution summaries for the LLM context.
 import logging
 from typing import Any, Dict, List, Optional
 
-from backend.schemas.workout import ExecutionScore, PlannedSession
+from backend.schemas.workout import ExecutionScore
 
 logger = logging.getLogger(__name__)
 
@@ -212,51 +212,4 @@ def _count_actual_sets(fit_data: Optional[Dict]) -> Optional[int]:
     laps = fit_data.get("laps") or []
     # Count laps flagged as intervals (excludes warmup/cooldown laps where available)
     return sum(1 for lap in laps if lap.get("type") in ("interval", "active", None))
-
-# ---------------------------------------------------------------------------
-# Sport-Specific TSS Calculators
-# ---------------------------------------------------------------------------
-def calculate_bike_tss(power_data: list, ftp: float, duration_sec: int) -> float:
-    """Standard TSS from power data."""
-    if not power_data or not ftp: return 0.0
-    # 30-sec smoothed rolling average^4 logic placeholder
-    np = sum(power_data) / len(power_data) * 1.1 if power_data else 0
-    intensity_factor = np / ftp
-    tss = (duration_sec * np * intensity_factor) / (ftp * 3600) * 100
-    return round(tss, 1)
-
-def calculate_run_tss(hr_data: list, lthr: float, duration_sec: int) -> float:
-    """hrTSS using lactate threshold HR."""
-    if not hr_data or not lthr: return 0.0
-    avg_hr = sum(hr_data) / len(hr_data) if hr_data else lthr * 0.7
-    trimp = (avg_hr / lthr) * duration_sec / 60
-    return round(trimp * 0.8, 1)
-
-def calculate_swim_tss(pace_per_100m: float, css_pace: float, duration_sec: int) -> float:
-    """
-    Swim Stress Score using CSS as threshold reference.
-    Analogous to IF for power — swim_if = css_pace / actual_pace.
-    """
-    if not pace_per_100m or not css_pace: return 0.0
-    swim_if = css_pace / pace_per_100m
-    duration_hr = duration_sec / 3600
-    sss = (swim_if ** 2) * duration_hr * 100
-    return round(sss, 1)
-
-def calculate_strength_tss(exercises: list, duration_min: int) -> float:
-    """Estimated strength TSS using volume load proxy."""
-    volume_load = sum(e.get("sets", 0) * e.get("reps", 0) * (e.get("weight_kg", 0) / 100) for e in exercises)
-    rpe_modifier = sum(e.get("rpe", 7) for e in exercises) / len(exercises) / 10 if exercises else 0.7
-    base_tss = duration_min * 0.5 * rpe_modifier
-    return round(min(base_tss + volume_load * 0.1, 80), 1)
-
-def calculate_climb_tss(hr_data: list, lthr: float, duration_sec: int, elevation_m: float) -> float:
-    """hrTSS equivalent for climbing — uses sustained HR."""
-    base = calculate_run_tss(hr_data, lthr, duration_sec)
-    return round(base + (elevation_m * 0.01), 1)
-
-def calculate_yoga_tss(subtype: str, duration_min: int) -> float:
-    """Yoga TSS by subtype."""
-    coeffs = {"hot_yoga": 0.5, "vinyasa": 0.4, "hatha": 0.25, "restorative": 0.05, "mobility": 0.05, "stretching": 0.02}
-    return round(duration_min * coeffs.get(subtype, 0.3), 1)
 

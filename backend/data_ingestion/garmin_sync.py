@@ -193,6 +193,83 @@ class GarminSyncManager:
         return readings
 
     # -----------------------------------------------------------------------
+    # Read overnight biometrics for morning decision pipeline
+    # -----------------------------------------------------------------------
+    def get_biometrics_snapshot(self) -> Dict:
+        """
+        Read sleep, body battery, and resting HR from garmindb monitoring SQLite.
+        Returns dict with keys: sleep_score (0-1), sleep_duration_hr, body_battery (0-100),
+        resting_hr. All values are None when data isn't available yet.
+        """
+        db_path = self.garmin_data_dir / "garmin_monitoring.db"
+        result: Dict = {
+            "sleep_score": None,
+            "sleep_duration_hr": None,
+            "body_battery": None,
+            "resting_hr": None,
+        }
+
+        if not db_path.exists():
+            logger.warning("garmindb monitoring.db not found — biometrics unavailable")
+            return result
+
+        yesterday = (date.today() - timedelta(days=1)).isoformat()
+        today = date.today().isoformat()
+
+        try:
+            conn = sqlite3.connect(str(db_path))
+            conn.row_factory = sqlite3.Row
+
+            # Sleep — garmindb may use 'sleep' or 'daily_sleep' depending on version
+            for table in ("sleep", "daily_sleep"):
+                try:
+                    row = conn.execute(
+                        f"SELECT total_sleep_time, sleep_score FROM {table} WHERE day = ? LIMIT 1",
+                        (yesterday,),
+                    ).fetchone()
+                    if row:
+                        if row["total_sleep_time"]:
+                            result["sleep_duration_hr"] = round(row["total_sleep_time"] / 3600, 2)
+                        if row["sleep_score"]:
+                            result["sleep_score"] = round(row["sleep_score"] / 100.0, 3)
+                        break
+                except sqlite3.OperationalError:
+                    continue
+
+            # Body battery — peak morning value from monitoring table
+            for table in ("monitoring_b", "monitoring"):
+                try:
+                    row = conn.execute(
+                        f"SELECT MAX(battery_level) AS battery FROM {table} "
+                        f"WHERE DATE(timestamp) = ? LIMIT 1",
+                        (today,),
+                    ).fetchone()
+                    if row and row["battery"] is not None:
+                        result["body_battery"] = int(row["battery"])
+                        break
+                except sqlite3.OperationalError:
+                    continue
+
+            # Resting HR — from daily summary
+            for table in ("daily_summary", "monitoring_hr"):
+                try:
+                    row = conn.execute(
+                        f"SELECT resting_heart_rate FROM {table} WHERE day = ? LIMIT 1",
+                        (yesterday,),
+                    ).fetchone()
+                    if row and row["resting_heart_rate"]:
+                        result["resting_hr"] = int(row["resting_heart_rate"])
+                        break
+                except sqlite3.OperationalError:
+                    continue
+
+            conn.close()
+        except sqlite3.Error as exc:
+            logger.error("SQLite biometrics query failed: %s", exc)
+
+        return result
+
+    # -----------------------------------------------------------------------
     # Read yesterday's summary for pipeline context
     # -----------------------------------------------------------------------
     def get_yesterday_summary(self) -> Dict:

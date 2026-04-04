@@ -178,8 +178,9 @@ def build_weekly_review_context(
     coming_week: Dict,
     prior_week_execution: Dict,
     fitness_state: Dict,
+    weather: Optional[Dict] = None,
 ) -> Dict[str, Any]:
-    return {
+    ctx: Dict[str, Any] = {
         "prompt_type": "weekly_review",
         "coming_week": coming_week,
         "prior_week_execution": prior_week_execution,
@@ -190,6 +191,9 @@ def build_weekly_review_context(
             "Do NOT regenerate the full month. Return only the revised week with changes_rationale."
         ),
     }
+    if weather:
+        ctx["weather"] = weather
+    return ctx
 
 
 def build_morning_decision_context(
