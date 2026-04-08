@@ -66,54 +66,76 @@ Output format:
 
 
 # ---------------------------------------------------------------------------
-# OllamaClient
+# OllamaClient — canonical LLM client with dual-host fallback
 # ---------------------------------------------------------------------------
 class OllamaClient:
+    """
+    Unified Ollama client with:
+      - Dual-host fallback (primary → fallback URL)
+      - Automatic reconnect if primary goes down
+      - JSON-only output enforcement
+      - Configurable temperature per prompt tier
+    """
+
     def __init__(
         self,
-        base_url: str = "http://localhost:11434",
-        model: str = "llama3.1:70b",
+        base_url: str = "",
+        fallback_url: str = "",
+        model: str = "",
         timeout: int = 300,
     ):
-        self.base_url = base_url.rstrip("/")
-        self.model = model
-        self.timeout = timeout
+        import os
+        self.primary_url = (
+            base_url or os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
+        ).rstrip("/")
+        self.fallback_url = (
+            fallback_url or os.environ.get("OLLAMA_FALLBACK_URL", "")
+        ).rstrip("/")
+        self.model = model or os.environ.get("OLLAMA_MODEL", "llama3.1:70b")
+        self.timeout = int(os.environ.get("LLM_TIMEOUT", str(timeout)))
+        self._active_url = self._determine_route()
+
+    def _determine_route(self) -> str:
+        """Ping primary, fall back to secondary if unreachable."""
+        if self._ping(self.primary_url):
+            logger.info("Ollama connected: primary [%s]", self.primary_url)
+            return self.primary_url
+        if self.fallback_url and self._ping(self.fallback_url):
+            logger.info("Ollama fallback active [%s]", self.fallback_url)
+            return self.fallback_url
+        logger.warning("No Ollama instances reachable — LLM calls will fail")
+        return self.primary_url
+
+    @staticmethod
+    def _ping(url: str) -> bool:
+        if not url:
+            return False
+        try:
+            requests.get(f"{url}/api/tags", timeout=3)
+            return True
+        except Exception:
+            return False
 
     # -----------------------------------------------------------------------
     # Monthly generation — full mesocycle
     # -----------------------------------------------------------------------
     def generate_monthly_plan(self, context: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Generate a full 4-week training plan.
-        Context shape: build_monthly_generation_context() output.
-        Returns: MonthPlan-compatible dict.
-        """
         prompt = f"{_MONTHLY_SYSTEM_PROMPT}\n\nContext:\n{json.dumps(context, indent=2)}"
-        return self._call(prompt, stream=False)
+        return self._call(prompt, temperature=0.2)
 
     # -----------------------------------------------------------------------
     # Weekly review — adjust coming week
     # -----------------------------------------------------------------------
     def generate_weekly_review(self, context: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Review and adjust the coming week based on prior week execution.
-        Context shape: build_weekly_review_context() output.
-        Returns: WeekPlan-compatible dict with changes_rationale.
-        """
         prompt = f"{_WEEKLY_SYSTEM_PROMPT}\n\nContext:\n{json.dumps(context, indent=2)}"
-        return self._call(prompt, stream=False)
+        return self._call(prompt, temperature=0.3)
 
     # -----------------------------------------------------------------------
     # Morning decision — finalise primary + alt
     # -----------------------------------------------------------------------
     def generate_morning_decision(self, context: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Finalise today's primary and alt sessions against overnight biometrics.
-        Context shape: build_morning_decision_context() output.
-        Returns: {conflict_level, signal_summary, primary, alt, recommendation}
-        """
         prompt = f"{_MORNING_SYSTEM_PROMPT}\n\nContext:\n{json.dumps(context, indent=2)}"
-        return self._call(prompt, stream=False)
+        return self._call(prompt, temperature=0.4)
 
     # -----------------------------------------------------------------------
     # Legacy: single workout plan (kept for existing tests/pipeline)
@@ -122,34 +144,79 @@ class OllamaClient:
         prompt = f"""You are a triathlon coach. Generate a structured week of workouts.
 Context: {json.dumps(context)}
 Return JSON only matching the WeekPlan schema."""
-        return self._call(prompt, stream=False)
+        return self._call(prompt)
 
     # -----------------------------------------------------------------------
-    # Core HTTP call
+    # Generic JSON generation (replaces CoachingLLMClient.generate_json)
     # -----------------------------------------------------------------------
-    def _call(self, prompt: str, stream: bool = False) -> Dict[str, Any]:
+    def generate_json(self, prompt: str, temperature: float = 0.3) -> Dict[str, Any]:
+        """Generic JSON prompt — for event extraction, free-form queries, etc."""
+        return self._call(prompt, temperature=temperature)
+
+    # -----------------------------------------------------------------------
+    # Core HTTP call with automatic fallback
+    # -----------------------------------------------------------------------
+    def _call(
+        self, prompt: str, stream: bool = False, temperature: float = 0.3
+    ) -> Dict[str, Any]:
         payload = {
             "model": self.model,
             "prompt": prompt,
             "format": "json",
             "stream": stream,
+            "options": {"temperature": temperature},
         }
+
+        # Try active URL first
         try:
-            response = requests.post(
-                f"{self.base_url}/api/generate",
-                json=payload,
-                timeout=self.timeout,
+            return self._send(self._active_url, payload)
+        except Exception as exc:
+            logger.error(
+                "Ollama request to %s failed: %s", self._active_url, exc
             )
-            response.raise_for_status()
-        except requests.RequestException as exc:
-            logger.error("Ollama request failed: %s", exc)
-            raise
+
+        # Failover to the other URL
+        other_url = (
+            self.fallback_url
+            if self._active_url == self.primary_url
+            else self.primary_url
+        )
+        if other_url and self._ping(other_url):
+            logger.info("Switching Ollama route to %s", other_url)
+            self._active_url = other_url
+            try:
+                return self._send(self._active_url, payload)
+            except Exception as exc2:
+                logger.error("Fallback also failed: %s", exc2)
+                raise RuntimeError("All Ollama routes failed") from exc2
+
+        raise RuntimeError(
+            f"Ollama generation failed at {self._active_url} and no fallback available"
+        )
+
+    def _send(self, url: str, payload: dict) -> Dict[str, Any]:
+        """HTTP POST → parse JSON response."""
+        response = requests.post(
+            f"{url}/api/generate",
+            json=payload,
+            timeout=self.timeout,
+        )
+        response.raise_for_status()
 
         raw = response.json().get("response", "{}")
+        # Safety: strip markdown fences if model hallucinates them
+        clean = raw.strip()
+        if clean.startswith("```"):
+            clean = clean.lstrip("`").removeprefix("json").strip().rstrip("`").strip()
+        if not clean:
+            return {}
         try:
-            return json.loads(raw)
+            return json.loads(clean)
         except json.JSONDecodeError as exc:
-            logger.error("Failed to parse Ollama response as JSON: %s\nRaw: %s", exc, raw[:500])
+            logger.error(
+                "Failed to parse Ollama response as JSON: %s\nRaw: %s",
+                exc, raw[:500],
+            )
             raise
 
 

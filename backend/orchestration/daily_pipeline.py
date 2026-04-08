@@ -64,10 +64,7 @@ class DailyPipeline:
         self.influx = influx or InfluxClient()
         self.postgres = postgres or PostgresClient()
         self.vector_db = vector_db or VectorDB()
-        self.llm = llm or OllamaClient(
-            base_url=os.environ.get("OLLAMA_BASE_URL", "http://192.168.50.46:11434"),
-            model=os.environ.get("OLLAMA_MODEL", "llama3.1:70b"),
-        )
+        self.llm = llm or OllamaClient()
         self.notifier = notifier or Notifier()
         self.log_dir = Path(log_dir or os.environ.get("LOG_DIR", "/data/logs"))
         self.log_dir.mkdir(parents=True, exist_ok=True)
@@ -530,8 +527,8 @@ def _estimate_rpe_drift(rpe_by_date: Dict[str, int], snap_date: str) -> Optional
 # ---------------------------------------------------------------------------
 def _safe_get_weather() -> Optional[Dict]:
     try:
-        lat = float(os.environ.get("HOME_LATITUDE", "0") or 0)
-        lon = float(os.environ.get("HOME_LONGITUDE", "0") or 0)
+        lat = float(os.environ.get("ATHLETE_LATITUDE", "0") or 0)
+        lon = float(os.environ.get("ATHLETE_LONGITUDE", "0") or 0)
         if lat == 0 and lon == 0:
             return None
         ws = WeatherService(latitude=lat, longitude=lon)

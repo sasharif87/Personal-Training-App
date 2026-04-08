@@ -30,13 +30,25 @@ class Notifier:
         self,
         ntfy_url: Optional[str] = None,
         ntfy_topic: Optional[str] = None,
+        ntfy_token: Optional[str] = None,
         smtp_host: Optional[str] = None,
         smtp_to: Optional[str] = None,
     ):
         self.ntfy_url = ntfy_url or os.environ.get("NTFY_URL", "https://ntfy.sh")
         self.ntfy_topic = ntfy_topic or os.environ.get("NTFY_TOPIC", "training-coach")
+        self.ntfy_token = ntfy_token or os.environ.get("NTFY_TOKEN", "")
         self.smtp_host = smtp_host or os.environ.get("SMTP_HOST")
         self.smtp_to = smtp_to or os.environ.get("NOTIFICATION_EMAIL")
+
+        # Warn if using default or obviously-placeholder topic on public ntfy
+        if "ntfy.sh" in self.ntfy_url and self.ntfy_topic in (
+            "training-coach", "coach-CHANGEME-use-random-topic",
+        ):
+            logger.warning(
+                "ntfy topic '%s' is a well-known default on public ntfy.sh — "
+                "anyone can subscribe. Set NTFY_TOPIC to a random value.",
+                self.ntfy_topic,
+            )
 
     # -----------------------------------------------------------------------
     # Send via ntfy.sh
@@ -57,6 +69,8 @@ class Notifier:
             "Title": title,
             "Priority": str(priority),
         }
+        if self.ntfy_token:
+            headers["Authorization"] = f"Bearer {self.ntfy_token}"
         if tags:
             headers["Tags"] = ",".join(tags)
 
@@ -87,8 +101,17 @@ class Notifier:
             msg["From"] = os.environ.get("SMTP_FROM", "coach@localhost")
             msg["To"] = self.smtp_to
 
-            port = int(os.environ.get("SMTP_PORT", "25"))
+            port = int(os.environ.get("SMTP_PORT", "587"))
             with smtplib.SMTP(self.smtp_host, port) as smtp:
+                smtp.ehlo()
+                if port != 25:
+                    smtp.starttls()
+                    smtp.ehlo()
+                # Authenticate if credentials provided
+                smtp_user = os.environ.get("SMTP_USER")
+                smtp_pass = os.environ.get("SMTP_PASS")
+                if smtp_user and smtp_pass:
+                    smtp.login(smtp_user, smtp_pass)
                 smtp.send_message(msg)
 
             logger.info("Email sent: %s → %s", subject, self.smtp_to)

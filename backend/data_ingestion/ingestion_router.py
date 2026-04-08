@@ -9,7 +9,7 @@ Outputs a summary of ingested activities and planned sessions.
 
 import logging
 from pathlib import Path
-from typing import Dict
+from typing import Any, Dict
 from datetime import date, timedelta
 
 logger = logging.getLogger(__name__)

@@ -17,9 +17,15 @@ COPY . .
 
 # Data directories (overridden by volume mounts in compose)
 RUN mkdir -p /data/garmin /data/garth /data/zwift_workouts /data/logs \
-             /data/workout_imports
+             /data/workout_imports /config/workouts
+
+# Non-root user — run with minimal privileges
+RUN adduser --disabled-password --gecos "" --home /home/appuser appuser \
+    && chown -R appuser:appuser /app /data /config
 
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONPATH=/app
+
+USER appuser
 
 CMD ["python", "main.py", "--daemon"]

@@ -44,7 +44,28 @@ venv.bak/
 logs/
 *.log
 
-# Personal Data (FIT files, etc.)
+# Personal Data (FIT files, Garmin databases, etc.)
 garmin_data/
 tr_workouts/
 ~/.garth
+*.db
+*.sqlite
+*.sqlite3
+
+# Data directories (runtime)
+/data/
+/tmp/
+
+# Sensitive config (contains athlete PII)
+config/season.json
+
+# IDE & tools
+.gemini/
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Node (frontend build)
+node_modules/
+frontend/dist/

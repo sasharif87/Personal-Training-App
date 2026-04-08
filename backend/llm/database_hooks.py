@@ -10,24 +10,31 @@ from typing import Dict, Any, Optional
 
 from backend.storage.postgres_client import db
 
+def _ensure_athlete_choices_table() -> None:
+    """Bootstrap the athlete_choices table. Called once at module load."""
+    try:
+        db.execute("""
+            CREATE TABLE IF NOT EXISTS athlete_choices (
+                id SERIAL PRIMARY KEY,
+                session_date DATE NOT NULL,
+                choice TEXT NOT NULL CHECK (choice IN ('primary', 'alt', 'missed')),
+                reason TEXT,
+                biometrics_snapshot JSONB,
+                execution_score_next_day JSONB,
+                created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+    except Exception:
+        pass  # Table bootstrap is best-effort — schema may already exist
+
+_ensure_athlete_choices_table()
+
+
 def log_athlete_choice(session_date: str, choice: str, reason: Optional[str], biometrics_snapshot: Dict[str, Any]) -> None:
     """
     Log whether athlete took primary or alt, and why if provided.
     This data is the explicitly tracked training signal for future HRV weighting calibration.
     """
-    
-    # Ensure our table exists before we insert into it.
-    db.execute("""
-        CREATE TABLE IF NOT EXISTS athlete_choices (
-            id SERIAL PRIMARY KEY,
-            session_date DATE NOT NULL,
-            choice TEXT NOT NULL CHECK (choice IN ('primary', 'alt', 'missed')),
-            reason TEXT,
-            biometrics_snapshot JSONB,
-            execution_score_next_day JSONB,
-            created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
     
     db.execute("""
         INSERT INTO athlete_choices

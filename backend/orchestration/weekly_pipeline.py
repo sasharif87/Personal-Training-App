@@ -48,10 +48,7 @@ class WeeklyPipeline:
     ):
         self.influx = influx or InfluxClient()
         self.postgres = postgres or PostgresClient()
-        self.llm = llm or OllamaClient(
-            base_url=os.environ.get("OLLAMA_BASE_URL", "http://192.168.50.46:11434"),
-            model=os.environ.get("OLLAMA_MODEL", "llama3.1:70b"),
-        )
+        self.llm = llm or OllamaClient()
         self.garmin_push = garmin_push or GarminPush()
         self.zwift = zwift or ZwiftWriter()
         self.notifier = notifier or Notifier()
@@ -96,8 +93,8 @@ class WeeklyPipeline:
         # --- Weather context for next 7 days ---
         weather_ctx = None
         try:
-            lat = float(os.environ.get("HOME_LATITUDE", "0") or 0)
-            lon = float(os.environ.get("HOME_LONGITUDE", "0") or 0)
+            lat = float(os.environ.get("ATHLETE_LATITUDE", "0") or 0)
+            lon = float(os.environ.get("ATHLETE_LONGITUDE", "0") or 0)
             if lat != 0 or lon != 0:
                 weather_ctx = WeatherService(latitude=lat, longitude=lon).get_weekly_weather_context()
         except Exception as exc:

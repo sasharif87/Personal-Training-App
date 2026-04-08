@@ -46,10 +46,7 @@ class MonthlyPipeline:
         self.influx = influx or InfluxClient()
         self.postgres = postgres or PostgresClient()
         self.vector_db = vector_db or VectorDB()
-        self.llm = llm or OllamaClient(
-            base_url=os.environ.get("OLLAMA_BASE_URL", "http://192.168.50.46:11434"),
-            model=os.environ.get("OLLAMA_MODEL", "llama3.1:70b"),
-        )
+        self.llm = llm or OllamaClient()
         self.cfg = config or ConfigManager()
 
     def run(self, dry_run: bool = False) -> MonthPlan:
