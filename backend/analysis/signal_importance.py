@@ -233,10 +233,24 @@ def _load_weights() -> Dict[str, Any]:
 
 
 def _save_weights(weights: Dict[str, Any]) -> None:
+    # 1. Persist to disk (survives if Postgres is unavailable)
     try:
         _WEIGHTS_FILE.write_text(json.dumps(weights, indent=2), encoding="utf-8")
     except OSError as exc:
-        logger.error("Failed to save signal weights: %s", exc)
+        logger.error("Failed to save signal weights to disk: %s", exc)
+
+    # 2. Persist to Postgres for long-term history and container-restart durability
+    try:
+        from backend.storage.postgres_client import db
+        db.log_signal_weights(weights)
+        logger.info(
+            "Signal weights snapshot written to signal_weights_log (source=%s, sessions=%s)",
+            weights.get("_source", "default"),
+            weights.get("_session_count", 0),
+        )
+    except Exception as exc:
+        # Non-fatal: disk copy is the primary store; DB is secondary audit trail
+        logger.warning("Failed to log signal weights to Postgres: %s", exc)
 
 
 # ---------------------------------------------------------------------------

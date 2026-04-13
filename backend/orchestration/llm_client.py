@@ -75,6 +75,10 @@ class OllamaClient:
       - Automatic reconnect if primary goes down
       - JSON-only output enforcement
       - Configurable temperature per prompt tier
+      - Separate fast/heavy model tiers matching docker-compose env vars:
+          OLLAMA_PRIMARY_URL, OLLAMA_FALLBACK_URL
+          OLLAMA_HEAVY_MODEL  — used for monthly generation (72B)
+          OLLAMA_FAST_MODEL   — used for daily/weekly decisions (8B)
     """
 
     def __init__(
@@ -85,13 +89,24 @@ class OllamaClient:
         timeout: int = 300,
     ):
         import os
+        # Accept both legacy OLLAMA_BASE_URL and the canonical OLLAMA_PRIMARY_URL
         self.primary_url = (
-            base_url or os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
+            base_url
+            or os.environ.get("OLLAMA_PRIMARY_URL")
+            or os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
         ).rstrip("/")
         self.fallback_url = (
             fallback_url or os.environ.get("OLLAMA_FALLBACK_URL", "")
         ).rstrip("/")
-        self.model = model or os.environ.get("OLLAMA_MODEL", "llama3.1:70b")
+        # model param overrides env; otherwise callers use fast/heavy helpers below
+        self._default_model = (
+            model
+            or os.environ.get("OLLAMA_MODEL", "")
+        )
+        self._fast_model = os.environ.get("OLLAMA_FAST_MODEL", "llama3.1:8b")
+        self._heavy_model = os.environ.get("OLLAMA_HEAVY_MODEL", "qwen2.5:72b")
+        # Fallback: if no explicit model env at all, use fast model as default
+        self.model = self._default_model or self._fast_model
         self.timeout = int(os.environ.get("LLM_TIMEOUT", str(timeout)))
         self._active_url = self._determine_route()
 
@@ -117,25 +132,25 @@ class OllamaClient:
             return False
 
     # -----------------------------------------------------------------------
-    # Monthly generation — full mesocycle
+    # Monthly generation — full mesocycle (heavy model)
     # -----------------------------------------------------------------------
     def generate_monthly_plan(self, context: Dict[str, Any]) -> Dict[str, Any]:
         prompt = f"{_MONTHLY_SYSTEM_PROMPT}\n\nContext:\n{json.dumps(context, indent=2)}"
-        return self._call(prompt, temperature=0.2)
+        return self._call(prompt, temperature=0.2, model=self._heavy_model)
 
     # -----------------------------------------------------------------------
-    # Weekly review — adjust coming week
+    # Weekly review — adjust coming week (fast model)
     # -----------------------------------------------------------------------
     def generate_weekly_review(self, context: Dict[str, Any]) -> Dict[str, Any]:
         prompt = f"{_WEEKLY_SYSTEM_PROMPT}\n\nContext:\n{json.dumps(context, indent=2)}"
-        return self._call(prompt, temperature=0.3)
+        return self._call(prompt, temperature=0.3, model=self._fast_model)
 
     # -----------------------------------------------------------------------
-    # Morning decision — finalise primary + alt
+    # Morning decision — finalise primary + alt (fast model)
     # -----------------------------------------------------------------------
     def generate_morning_decision(self, context: Dict[str, Any]) -> Dict[str, Any]:
         prompt = f"{_MORNING_SYSTEM_PROMPT}\n\nContext:\n{json.dumps(context, indent=2)}"
-        return self._call(prompt, temperature=0.4)
+        return self._call(prompt, temperature=0.4, model=self._fast_model)
 
     # -----------------------------------------------------------------------
     # Legacy: single workout plan (kept for existing tests/pipeline)
@@ -157,10 +172,11 @@ Return JSON only matching the WeekPlan schema."""
     # Core HTTP call with automatic fallback
     # -----------------------------------------------------------------------
     def _call(
-        self, prompt: str, stream: bool = False, temperature: float = 0.3
+        self, prompt: str, stream: bool = False, temperature: float = 0.3,
+        model: Optional[str] = None,
     ) -> Dict[str, Any]:
         payload = {
-            "model": self.model,
+            "model": model or self.model,
             "prompt": prompt,
             "format": "json",
             "stream": stream,

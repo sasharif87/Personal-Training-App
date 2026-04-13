@@ -27,7 +27,12 @@ class PipelineMonitor:
         postgres_conn_str: Optional[str] = None,
     ):
         self.influx_url = influx_url or os.environ.get("INFLUXDB_URL", "http://localhost:8086")
-        self.ollama_url = ollama_url or os.environ.get("OLLAMA_BASE_URL", "http://192.168.50.46:11434")
+        # Prefer OLLAMA_PRIMARY_URL (set by docker-compose); fall back to legacy OLLAMA_BASE_URL
+        self.ollama_url = (
+            ollama_url
+            or os.environ.get("OLLAMA_PRIMARY_URL")
+            or os.environ.get("OLLAMA_BASE_URL", "http://192.168.50.46:11434")
+        )
         self.postgres_conn_str = postgres_conn_str
 
     def full_health_check(self) -> Dict[str, Any]:
@@ -91,15 +96,27 @@ class PipelineMonitor:
 
             models = resp.json().get("models", [])
             model_names = [m.get("name", "") for m in models]
-            target = os.environ.get("OLLAMA_MODEL", "llama3.1:70b")
-            has_model = any(target in n for n in model_names)
+            # Check both the fast model and heavy model are present
+            fast_model  = os.environ.get("OLLAMA_FAST_MODEL",  os.environ.get("OLLAMA_MODEL", "llama3.1:8b"))
+            heavy_model = os.environ.get("OLLAMA_HEAVY_MODEL", "qwen2.5:72b")
+            has_fast  = any(fast_model  in n for n in model_names)
+            has_heavy = any(heavy_model in n for n in model_names)
+
+            if has_fast and has_heavy:
+                status = "healthy"
+            elif has_fast:
+                status = "heavy_model_missing"
+            else:
+                status = "model_missing"
 
             return {
-                "status": "healthy" if has_model else "model_missing",
+                "status": status,
                 "url": self.ollama_url,
                 "models_available": len(models),
-                "target_model": target,
-                "model_loaded": has_model,
+                "fast_model": fast_model,
+                "heavy_model": heavy_model,
+                "fast_model_loaded": has_fast,
+                "heavy_model_loaded": has_heavy,
             }
         except requests.RequestException as exc:
             return {"status": "unreachable", "url": self.ollama_url, "error": str(exc)}

@@ -40,6 +40,11 @@ services:
       interval: 30s
       timeout: 10s
       retries: 5
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   # ---------------------------------------------------------------------------
   # PostgreSQL 16 — relational storage (plans, execution, TR library)
@@ -52,7 +57,7 @@ services:
       - "5432:5432"
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-coaching}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB:-coaching_db}
     volumes:
       - postgres-data:/var/lib/postgresql/data
@@ -61,6 +66,11 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   # ---------------------------------------------------------------------------
   # ChromaDB — vector store for RAG (historical training block embeddings)
@@ -80,6 +90,11 @@ services:
       interval: 30s
       timeout: 10s
       retries: 5
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   # ---------------------------------------------------------------------------
   # Grafana — fitness dashboards (CTL/ATL/TSB, HRV, plan vs actual)
@@ -101,6 +116,11 @@ services:
     depends_on:
       influxdb:
         condition: service_healthy
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   # ---------------------------------------------------------------------------
   # Config UI — season/block/race/athlete config form (port 8080)
@@ -121,7 +141,7 @@ services:
       INFLUXDB_TOKEN: ${INFLUXDB_TOKEN}
       INFLUXDB_ORG: ${INFLUXDB_ORG:-coaching}
       INFLUXDB_BUCKET: ${INFLUXDB_BUCKET:-training}
-      DATABASE_URL: postgresql://${POSTGRES_USER:-coaching}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-coaching_db}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-coaching}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-coaching_db}
     volumes:
       - season-config:/config
       - workout-imports:/data/workout_imports
@@ -129,6 +149,11 @@ services:
     depends_on:
       influxdb:
         condition: service_healthy
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   # ---------------------------------------------------------------------------
   # Coaching App — daily pipeline + manual triggers
@@ -182,6 +207,51 @@ services:
     # Default: stay alive so you can exec in or trigger manually
     # The 3 AM cron is managed by the app's internal APScheduler
     command: python main.py --daemon
+    # Healthcheck: verifies APScheduler is alive by touching a heartbeat file
+    # main.py --daemon must write /tmp/scheduler_heartbeat on each tick
+    healthcheck:
+      test: ["CMD", "find", "/tmp/scheduler_heartbeat", "-mmin", "-6"]
+      interval: 5m
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ---------------------------------------------------------------------------
+  # DB Backup — weekly pg_dump into /data/logs so TrueNAS snapshots capture it
+  # Runs every Sunday at 01:00. Keeps last 4 dumps (one per week).
+  # ---------------------------------------------------------------------------
+  db-backup:
+    image: postgres:16
+    container_name: coaching_db_backup
+    restart: unless-stopped
+    environment:
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_USER: ${POSTGRES_USER:-coaching}
+      POSTGRES_DB: ${POSTGRES_DB:-coaching_db}
+    volumes:
+      - logs:/data/logs
+    entrypoint: >
+      /bin/sh -c "
+        while true; do
+          DUMP_FILE=/data/logs/pg_backup_$$(date +%Y%m%d_%H%M%S).sql;
+          pg_dump -h postgres -U $$POSTGRES_USER $$POSTGRES_DB > $$DUMP_FILE && echo \"Backup written: $$DUMP_FILE\";
+          ls -1t /data/logs/pg_backup_*.sql 2>/dev/null | tail -n +5 | xargs -r rm --;
+          sleep 604800;
+        done
+      "
+    depends_on:
+      postgres:
+        condition: service_healthy
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "2"
 
 # ---------------------------------------------------------------------------
 # Volumes

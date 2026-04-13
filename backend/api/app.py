@@ -31,6 +31,8 @@ from fastapi import FastAPI, Form, Request, UploadFile, File, Depends, HTTPExcep
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import Response
 from pydantic import BaseModel, Field
 
 from backend.config_manager import ConfigManager, BLOCK_PHASES, RACE_FORMATS, RACE_PRIORITIES
@@ -89,10 +91,36 @@ class SeasonConfigUpdate(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Security headers middleware
+# ---------------------------------------------------------------------------
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next) -> Response:
+        response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; "
+            "script-src 'self' 'unsafe-inline'; "   # Vite dev modules need inline
+            "style-src 'self' 'unsafe-inline'; "
+            "img-src 'self' data:; "
+            "connect-src 'self';"
+        )
+        # Only set HSTS if TLS is in use (i.e. behind a reverse proxy with HTTPS)
+        if request.url.scheme == "https":
+            response.headers["Strict-Transport-Security"] = (
+                "max-age=31536000; includeSubDomains"
+            )
+        return response
+
+
+# ---------------------------------------------------------------------------
 # App init
 # ---------------------------------------------------------------------------
 app = FastAPI(title="AI Coaching Config", docs_url=None, redoc_url=None)
 cfg = ConfigManager()
+
+app.add_middleware(SecurityHeadersMiddleware)
 
 # CORS — allow the SPA and known dashboard origins
 _CORS_ORIGINS = os.environ.get(

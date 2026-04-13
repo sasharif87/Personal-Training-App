@@ -171,10 +171,84 @@ def parse_layout_a(rows: List[List], headers: List[str], plan_start: date) -> Li
 
 
 def parse_layout_b(rows: List[List], headers: List[str], plan_start: date) -> List[Dict]:
-    """Weeks as columns, sessions as rows."""
-    # Simplified parser fallback for layout B (often highly custom)
-    # The actual implementation depends heavily on the specific coach format.
-    return []
+    """
+    Weeks as columns, sessions as rows.
+
+    Expected shape:
+        Sport/Session  | W1       | W2       | W3       | W4
+        Swim Mon       | 2x1500m  | 3x1000m  | 4x800m   | Easy 1km
+        Bike Tue       | 2hr Z2   | 2.5hr Z2 | 3hr Z2   | 1hr recovery
+        Run Wed        | 10km Z2  | 12km Z2  | 14km Z2  | 8km easy
+
+    The first column labels the sport + day.  Subsequent columns are week cells.
+    Week column headers must contain "w", "wk", "week", or a bare integer (1, 2 …).
+    """
+    if not headers or not rows:
+        return []
+
+    # ── Identify week columns ───────────────────────────────────────────────
+    _WEEK_RE = re.compile(r"^(?:w(?:ee)?k?\.?\s*)?(\d+)$", re.IGNORECASE)
+
+    week_cols: List[tuple] = []   # (col_index, week_number 0-based)
+    for col_idx, hdr in enumerate(headers):
+        hdr_str = str(hdr or "").strip()
+        m = _WEEK_RE.match(hdr_str)
+        if m:
+            week_num = int(m.group(1)) - 1   # convert to 0-based
+            week_cols.append((col_idx, week_num))
+
+    if not week_cols:
+        logger.warning("parse_layout_b: no week columns found in headers %s", headers)
+        return []
+
+    # ── Build sessions ──────────────────────────────────────────────────────
+    sessions: List[Dict] = []
+
+    for row in rows:
+        if not any(str(c or "").strip() for c in row):
+            continue   # blank row
+
+        # First cell: "Swim Mon", "Bike Tuesday", "Run Wed", "Strength Fri" …
+        first_cell = str(row[0] or "").strip()
+        if not first_cell:
+            continue
+
+        # Extract day-of-week offset
+        words = first_cell.lower().split()
+        day_offset: Optional[int] = None
+        for word in words:
+            if word in DAY_OFFSETS:
+                day_offset = DAY_OFFSETS[word]
+                break
+
+        # Extract sport hint from first cell
+        sport_hint = _infer_sport(first_cell, "")
+
+        for col_idx, week_num in week_cols:
+            if col_idx >= len(row):
+                continue
+            cell = str(row[col_idx] or "").strip()
+            if not cell or cell.lower() in ("rest", "off", "-", ""):
+                continue
+
+            week_start = plan_start + timedelta(weeks=week_num)
+
+            # Use the detected day offset; fall back to Mon (0) when absent
+            offset = day_offset if day_offset is not None else 0
+            session_date = week_start + timedelta(days=offset)
+
+            parsed = _parse_cell_to_session(cell, session_date)
+            if parsed is None:
+                continue
+
+            # Override sport if the row label was more specific than the cell text
+            if sport_hint != "cross_training":
+                parsed["sport"] = sport_hint
+
+            sessions.append(parsed)
+
+    logger.info("parse_layout_b: extracted %d sessions", len(sessions))
+    return sessions
 
 
 def parse_layout_c(rows: List[List], headers: List[str], column_map: Optional[Dict] = None) -> List[Dict]:

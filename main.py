@@ -141,22 +141,33 @@ def run_daemon() -> None:
 
     scheduler = BlockingScheduler(timezone=tz)
 
+    def _write_heartbeat():
+        """Touch /tmp/scheduler_heartbeat so Docker's healthcheck can verify the scheduler is alive."""
+        import pathlib
+        hb = pathlib.Path("/tmp/scheduler_heartbeat")
+        hb.touch()
+
+    # Heartbeat every 5 minutes — Docker healthcheck tests for mtime < 6 min
+    from apscheduler.triggers.interval import IntervalTrigger
+    scheduler.add_job(_write_heartbeat, IntervalTrigger(minutes=5), id="heartbeat")
+    _write_heartbeat()  # Write immediately so the container passes its start_period check
+
     scheduler.add_job(
-        run_monthly_pipeline, 
-        CronTrigger.from_crontab(cron_monthly, timezone=tz), 
-        id="monthly_pipeline", 
+        run_monthly_pipeline,
+        CronTrigger.from_crontab(cron_monthly, timezone=tz),
+        id="monthly_pipeline",
         misfire_grace_time=3600
     )
     scheduler.add_job(
-        run_weekly_pipeline, 
-        CronTrigger.from_crontab(cron_weekly, timezone=tz), 
-        id="weekly_pipeline", 
+        run_weekly_pipeline,
+        CronTrigger.from_crontab(cron_weekly, timezone=tz),
+        id="weekly_pipeline",
         misfire_grace_time=3600
     )
     scheduler.add_job(
-        run_pipeline, 
-        CronTrigger.from_crontab(cron_daily, timezone=tz), 
-        id="daily_pipeline", 
+        run_pipeline,
+        CronTrigger.from_crontab(cron_daily, timezone=tz),
+        id="daily_pipeline",
         misfire_grace_time=3600
     )
 

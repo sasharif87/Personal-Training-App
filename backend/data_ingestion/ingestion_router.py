@@ -8,6 +8,8 @@ Outputs a summary of ingested activities and planned sessions.
 """
 
 import logging
+import requests
+import requests.exceptions
 from pathlib import Path
 from typing import Any, Dict
 from datetime import date, timedelta
@@ -31,20 +33,30 @@ def run_ingestion(athlete_id: str, athlete_config: dict) -> Dict[str, Any]:
     try:
         from backend.data_ingestion.garmin_sync import GarminSync
         from garth.exc import GarthException
-        
+
         garmin_username = athlete_config.get("garmin_username")
         garmin_password = athlete_config.get("garmin_password")
-        
+
         if garmin_username and garmin_password:
             sync = GarminSync()
             # In a real run, this fetches FIT files and parses via garmindb
-            # sync.run() 
+            # sync.run()
             summary["garmin"] = "api_ok"
         else:
             summary["garmin"] = "missing_credentials"
-            
-    except Exception as exc: # Fallback to offline FIT processing
-        logger.warning("Garmin Sync failed, will rely on file watch: %s", exc)
+
+    except ImportError as exc:
+        # garth or garmindb not installed — surface loudly, not silently
+        logger.error("Garmin library missing — install garth and garmindb: %s", exc)
+        summary["garmin"] = f"library_error: {exc}"
+    except GarthException as exc:
+        logger.warning("Garmin auth/session error: %s", exc)
+        summary["garmin"] = f"auth_error: {exc}"
+    except requests.exceptions.RequestException as exc:
+        logger.warning("Garmin network error, will rely on file watch: %s", exc)
+        summary["garmin"] = "network_error — using file-watch"
+    except Exception as exc:
+        logger.warning("Garmin sync unexpected failure, will rely on file watch: %s", exc)
         summary["garmin"] = "unavailable — using file-watch"
         
     garmin_import_dir = Path("/data/garmin/fit")
@@ -69,8 +81,14 @@ def run_ingestion(athlete_id: str, athlete_config: dict) -> Dict[str, Any]:
             summary["trainingpeaks"] = f"api_ok ({len(tp_sessions)} sessions)"
         else:
             summary["trainingpeaks"] = "missing_token"
+    except ImportError as exc:
+        logger.error("TrainingPeaks library missing: %s", exc)
+        summary["trainingpeaks"] = f"library_error: {exc}"
+    except requests.exceptions.RequestException as exc:
+        logger.warning("TrainingPeaks network error, relying on file watch: %s", exc)
+        summary["trainingpeaks"] = "network_error — using file-watch"
     except Exception as exc:
-        logger.warning("TrainingPeaks API failed, relying on file watch: %s", exc)
+        logger.warning("TrainingPeaks API unexpected failure, relying on file watch: %s", exc)
         summary["trainingpeaks"] = "unavailable — using file-watch"
         
     from backend.data_ingestion.tp_file_fallback import scan_tp_import_folder
