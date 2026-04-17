@@ -63,6 +63,7 @@ config/season.json
 .gemini/
 .vscode/
 .idea/
+.claude/
 *.swp
 *.swo
 

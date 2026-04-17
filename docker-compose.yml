@@ -10,7 +10,7 @@
 #   /mnt/<pool>/coaching/logs/
 #   /mnt/<pool>/coaching/zwift_workouts/  ← drop .zwo here (or Syncthing target)
 #
-# Ollama runs externally — set OLLAMA_BASE_URL in .env to http://192.168.50.46:11434
+# Ollama runs externally — set OLLAMA_BASE_URL / OLLAMA_FALLBACK_URL in .env
 
 version: "3.9"
 
@@ -109,7 +109,7 @@ services:
       GF_SECURITY_ADMIN_USER: ${GRAFANA_USER:-admin}
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD}
       GF_INSTALL_PLUGINS: grafana-clock-panel,grafana-simple-json-datasource
-      GF_SERVER_ROOT_URL: http://jupiter:3000
+      GF_SERVER_ROOT_URL: http://localhost:3000
     volumes:
       - grafana-data:/var/lib/grafana
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
@@ -166,8 +166,8 @@ services:
     container_name: coaching_app
     restart: unless-stopped
     environment:
-      OLLAMA_PRIMARY_URL: ${OLLAMA_PRIMARY_URL:-http://192.168.50.250:11434} # Gaming Rig
-      OLLAMA_FALLBACK_URL: ${OLLAMA_FALLBACK_URL:-http://192.168.50.46:11434} # TrueNAS
+      OLLAMA_PRIMARY_URL: ${OLLAMA_PRIMARY_URL:-http://your-ollama-host:11434}
+      OLLAMA_FALLBACK_URL: ${OLLAMA_FALLBACK_URL:-http://your-ollama-fallback:11434}
       OLLAMA_HEAVY_MODEL: ${OLLAMA_HEAVY_MODEL:-qwen2.5:72b}
       OLLAMA_FAST_MODEL: ${OLLAMA_FAST_MODEL:-llama3.1:8b}
       INFLUXDB_URL: http://influxdb:8086
@@ -189,7 +189,7 @@ services:
       CRON_DAILY: ${CRON_DAILY:-"0 3 * * *"}
       CRON_WEEKLY: ${CRON_WEEKLY:-"0 2 * * 1"}   # 2 AM every Monday
       CRON_MONTHLY: ${CRON_MONTHLY:-"0 1 1 * *"} # 1 AM on the 1st
-      TZ: ${TZ:-Australia/Melbourne}
+      TZ: ${TZ:-UTC}
     volumes:
       - garmin-data:/data/garmin
       - garth-tokens:/data/garth
