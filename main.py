@@ -172,9 +172,9 @@ def run_daemon() -> None:
     )
 
     logger.info(f"Daemon started in {tz} timezone")
-    logger.info(f"  Monthly Cron : '{cron_monthly}' (Next: {scheduler.get_job('monthly_pipeline').next_run_time})")
-    logger.info(f"  Weekly Cron  : '{cron_weekly}' (Next: {scheduler.get_job('weekly_pipeline').next_run_time})")
-    logger.info(f"  Daily Cron   : '{cron_daily}' (Next: {scheduler.get_job('daily_pipeline').next_run_time})")
+    logger.info(f"  Monthly Cron : '{cron_monthly}'")
+    logger.info(f"  Weekly Cron  : '{cron_weekly}'")
+    logger.info(f"  Daily Cron   : '{cron_daily}'")
 
     try:
         scheduler.start()

@@ -83,11 +83,6 @@ services:
       - chromadb-data:/chroma/chroma
     environment:
       ANONYMIZED_TELEMETRY: "false"
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/heartbeat"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
     logging:
       driver: "json-file"
       options:
@@ -182,6 +177,9 @@ services:
       ZWIFT_WORKOUTS_DIR: /data/zwift_workouts
       LOG_DIR: /data/logs
       SEASON_CONFIG_PATH: /config/season.json
+      NTFY_URL: ${NTFY_URL:-https://ntfy.sh}
+      NTFY_TOPIC: ${NTFY_TOPIC:-training-coach}
+      NTFY_TOKEN: ${NTFY_TOKEN:-}
       WORKOUTS_CONFIG_DIR: /app/config/workouts
       WORKOUT_IMPORT_DIR: /data/workout_imports
       CRON_DAILY: ${CRON_DAILY:-"0 3 * * *"}
@@ -199,7 +197,7 @@ services:
       influxdb:
         condition: service_healthy
       chromadb:
-        condition: service_healthy
+        condition: service_started
       postgres:
         condition: service_healthy
     # Default: stay alive so you can exec in or trigger manually

@@ -65,8 +65,12 @@ class Notifier:
         Priority: 1=min, 3=default, 5=urgent
         """
         url = f"{self.ntfy_url}/{self.ntfy_topic}"
+        import base64
+        b64_title = base64.b64encode(title.encode("utf-8")).decode("ascii")
+        rfc2047_title = f"=?utf-8?B?{b64_title}?="
+
         headers = {
-            "Title": title,
+            "Title": rfc2047_title,
             "Priority": str(priority),
         }
         if self.ntfy_token:

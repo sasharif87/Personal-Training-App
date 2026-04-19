@@ -91,6 +91,7 @@ class DailyPipeline:
         if not skip_sync:
             logger.info("[1/10] Syncing Garmin Connect data")
             try:
+                self.garmin_sync._get_garth()
                 self.garmin_sync.sync_garmindb()
             except Exception as exc:
                 logger.error("Garmin sync failed: %s", exc)
