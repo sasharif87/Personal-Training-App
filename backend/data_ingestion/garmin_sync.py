@@ -66,7 +66,26 @@ class GarminSyncManager:
             password = os.environ.get("GARMIN_PASSWORD")
             if not username or not password:
                 raise RuntimeError("GARMIN_USERNAME and GARMIN_PASSWORD must be set for initial garth login")
-            garth.login(username, password)
+            
+            try:
+                garth.login(username, password)
+            except Exception as e:
+                import requests
+                if isinstance(e, requests.exceptions.HTTPError) and e.response is not None:
+                    if e.response.status_code == 429:
+                        raise RuntimeError(
+                            "GARMIN RATE LIMIT (HTTP 429): Your IP is temporarily blocked by Garmin/Cloudflare "
+                            "due to too many login attempts. Please wait 20-30 minutes before trying again."
+                        ) from e
+                    if e.response.status_code in (401, 403):
+                        raise RuntimeError(
+                            f"GARMIN AUTH FAILED (HTTP {e.response.status_code}): Invalid username or password."
+                        ) from e
+                # Fallback for other errors, truncating massive URLs
+                raise RuntimeError(
+                    f"Garmin login failed unexpectedly: {type(e).__name__} - {str(e)[:150]}"
+                ) from e
+                
             garth.save(str(self.garth_home))
 
         self._garth_client = garth
