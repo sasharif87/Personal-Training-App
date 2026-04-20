@@ -98,6 +98,7 @@ class Engine:
         self._available = None        # models on url (quick/reason host)
         self._available_code = None   # models on code_url
         self._resolved = {}           # role -> model name
+        self._resolved_hosts = {}     # role -> host URL (tracks where the model actually lives)
 
     # ── Connection & model discovery ─────────────────────────────────────────
 
@@ -145,12 +146,24 @@ class Engine:
             # Check pinned first
             if role in self.pinned:
                 self._resolved[role] = self.pinned[role]
+                # Pinned code models go to code_url; everything else to url
+                self._resolved_hosts[role] = self.code_url if role == "code" else self.url
                 continue
 
-            # Route code role to the code host pool; others use the primary pool
-            pool = (self._available_code or self._available) if role == "code" else self._available
+            # Route code role to the code host pool; others use the primary pool.
+            # If the code host is unavailable, fall back to the primary pool AND
+            # remember to send requests there too — not to the dead code_url.
+            code_host_available = bool(self._available_code)
+            if role == "code":
+                pool = self._available_code if code_host_available else (self._available or [])
+                preferred_host = self.code_url if code_host_available else self.url
+            else:
+                pool = self._available or []
+                preferred_host = self.url
+
             if not pool:
                 pool = self._available or []
+                preferred_host = self.url
 
             # Walk preference list, pick first available in the right pool
             for pref in MODEL_PREFERENCES[role]:
@@ -172,6 +185,8 @@ class Engine:
             # Ultimate fallback — use whatever's available in that pool
             if role not in self._resolved and pool:
                 self._resolved[role] = pool[0]
+
+            self._resolved_hosts[role] = preferred_host
 
     def model_for(self, role):
         """Get the resolved model name for a role."""
@@ -199,7 +214,7 @@ class Engine:
                  timeout=1800):
         """Send prompt to Ollama. Model + host selected by role."""
         model = self.model_for(role)
-        host = self.code_url if role == "code" else self.url
+        host = self._resolved_hosts.get(role, self.code_url if role == "code" else self.url)
         data = {
             "model": model,
             "prompt": prompt,
@@ -231,7 +246,7 @@ class Engine:
                 "num_ctx": num_ctx or CTX_DEFAULTS.get(role, 16384),
             },
         }
-        host = self.code_url if role == "code" else self.url
+        host = self._resolved_hosts.get(role, self.code_url if role == "code" else self.url)
         req = urllib.request.Request(
             f"{host}/api/chat",
             json.dumps(data).encode("utf-8"),
