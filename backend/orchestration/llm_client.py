@@ -30,15 +30,47 @@ _MONTHLY_SYSTEM_PROMPT = """You are a triathlon and endurance coach with deep kn
 Generate a full month training plan as structured JSON. Respond ONLY with valid JSON. No preamble, no markdown, no text outside the JSON.
 
 Rules:
-- Produce 4 weeks of sessions. 6 training days per week, 1 rest day.
+- Produce exactly 4 weeks. 6 training days per week, 1 rest day. Use dates from the context start_date.
 - Week 3 = peak load (highest TSS). Week 4 = recovery (60-70% of week 3 volume).
 - For every threshold, VO2max, or race-pace session: include BOTH a primary AND a conditional_alt.
 - The conditional_alt is what this session looks like if fatigue signals are elevated that morning.
-- The alt must be meaningfully different — not just 10% intensity reduction. Reduce volume, not just intensity.
-- Include cross-training (strength, mobility) as real scheduled sessions with structure.
-- Load progression must be explicit in rationale fields.
+- The alt must be meaningfully different — reduce volume AND duration, not just intensity.
+- Include cross-training (strength, mobility) as real scheduled sessions.
+- Keep steps[] concise: 2-5 steps per session maximum. No long descriptions.
 - Every session needs: sport, title, description, rationale, estimated_tss, steps[].
-- Every step needs: type, duration_sec or distance_m, target_value (FTP fraction or CSS fraction or HR fraction of LTHR), target_type (power|pace|hr), repeat, description."""
+- Every step needs: type, duration_sec, target_value (FTP/CSS/LTHR fraction), target_type (power|pace|hr), repeat.
+
+Required output schema — respond with EXACTLY this structure:
+{
+  "block_phase": "Base",
+  "month_rationale": "one sentence",
+  "weeks": [
+    {
+      "week_number": 1,
+      "block_phase": "Base",
+      "target_tss": 350,
+      "weekly_rationale": "one sentence",
+      "days": [
+        {
+          "day": "Monday",
+          "date": "YYYY-MM-DD",
+          "rest_day": false,
+          "primary": {
+            "sport": "bike",
+            "title": "Session title",
+            "description": "Brief description",
+            "rationale": "Why this session",
+            "estimated_tss": 60,
+            "steps": [
+              {"type": "warmup", "duration_sec": 600, "target_value": 0.55, "target_type": "power", "repeat": 1}
+            ]
+          },
+          "conditional_alt": null
+        }
+      ]
+    }
+  ]
+}"""
 
 _WEEKLY_SYSTEM_PROMPT = """You are a triathlon coach reviewing a week of training before it begins.
 Respond ONLY with valid JSON. Return the full revised week with a changes_rationale field.
@@ -135,8 +167,11 @@ class OllamaClient:
     # Monthly generation — full mesocycle (heavy model)
     # -----------------------------------------------------------------------
     def generate_monthly_plan(self, context: Dict[str, Any]) -> Dict[str, Any]:
-        prompt = f"{_MONTHLY_SYSTEM_PROMPT}\n\nContext:\n{json.dumps(context, indent=2)}"
-        return self._call(prompt, temperature=0.2, model=self._heavy_model)
+        # Add start_date so the model can assign real dates to each day
+        from datetime import date
+        ctx = {**context, "start_date": date.today().isoformat()}
+        prompt = f"{_MONTHLY_SYSTEM_PROMPT}\n\nContext:\n{json.dumps(ctx, indent=2)}"
+        return self._call(prompt, temperature=0.2, model=self._heavy_model, num_predict=16384)
 
     # -----------------------------------------------------------------------
     # Weekly review — adjust coming week (fast model)
@@ -173,14 +208,17 @@ Return JSON only matching the WeekPlan schema."""
     # -----------------------------------------------------------------------
     def _call(
         self, prompt: str, stream: bool = False, temperature: float = 0.3,
-        model: Optional[str] = None,
+        model: Optional[str] = None, num_predict: Optional[int] = None,
     ) -> Dict[str, Any]:
+        options: Dict = {"temperature": temperature}
+        if num_predict:
+            options["num_predict"] = num_predict
         payload = {
             "model": model or self.model,
             "prompt": prompt,
             "format": "json",
             "stream": stream,
-            "options": {"temperature": temperature},
+            "options": options,
         }
 
         # Try active URL first

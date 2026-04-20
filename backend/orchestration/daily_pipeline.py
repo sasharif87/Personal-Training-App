@@ -94,10 +94,21 @@ class DailyPipeline:
                 self.garmin_sync._get_garth()
                 self.garmin_sync.sync_garmindb()
             except Exception as exc:
-                logger.error("Garmin sync failed: %s", exc)
-                logger.warning("Continuing with existing InfluxDB data")
-                if not dry_run:
-                    self.notifier.pipeline_failure("Garmin sync", str(exc))
+                exc_str = str(exc)
+                is_rate_limited = (
+                    "429" in exc_str
+                    or "too many requests" in exc_str.lower()
+                    or "rate limit" in exc_str.lower()
+                )
+                if is_rate_limited:
+                    logger.warning(
+                        "Garmin rate limited (429) — skipping sync, using existing InfluxDB data"
+                    )
+                else:
+                    logger.error("Garmin sync failed: %s", exc)
+                    logger.warning("Continuing with existing InfluxDB data")
+                    if not dry_run:
+                        self.notifier.pipeline_failure("Garmin sync", str(exc))
         else:
             logger.info("[1/10] Skipping Garmin sync (skip_sync=True)")
 
