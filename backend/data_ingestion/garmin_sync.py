@@ -70,21 +70,32 @@ class GarminSyncManager:
             try:
                 garth.login(username, password)
             except Exception as e:
-                import requests
-                if isinstance(e, requests.exceptions.HTTPError) and e.response is not None:
-                    if e.response.status_code == 429:
-                        raise RuntimeError(
-                            "GARMIN RATE LIMIT (HTTP 429): Your IP is temporarily blocked by Garmin/Cloudflare "
-                            "due to too many login attempts. Please wait 20-30 minutes before trying again."
-                        ) from e
-                    if e.response.status_code in (401, 403):
-                        raise RuntimeError(
-                            f"GARMIN AUTH FAILED (HTTP {e.response.status_code}): Invalid username or password."
-                        ) from e
+                err_str = str(e)
+                if "429 Client Error" in err_str:
+                    raise RuntimeError(
+                        "\n\n=======================================================\n"
+                        "❌ GARMIN RATE LIMIT (HTTP 429 LOCK ERROR)\n"
+                        "Your IP is blocked by Garmin/Cloudflare bot protection.\n"
+                        "Note: Garmin recently started aggressively blocking all\n"
+                        "standard automated logins. You may need to wait, use a\n"
+                        "VPN, or manually export Garmin session browser cookies.\n"
+                        "=======================================================\n"
+                    ) from None
+                if "401 Client Error" in err_str or "403 Client Error" in err_str:
+                    raise RuntimeError(
+                        "\n\n=======================================================\n"
+                        "❌ GARMIN AUTH FAILED (HTTP 401/403)\n"
+                        "Invalid username or password. Check your .env file.\n"
+                        "=======================================================\n"
+                    ) from None
+                
                 # Fallback for other errors, truncating massive URLs
                 raise RuntimeError(
-                    f"Garmin login failed unexpectedly: {type(e).__name__} - {str(e)[:150]}"
-                ) from e
+                    f"\n\n=======================================================\n"
+                    f"❌ GARMIN LOGIN FAILED UNEXPECTEDLY\n"
+                    f"{type(e).__name__} - {err_str[:150]}...\n"
+                    f"=======================================================\n"
+                ) from None
                 
             garth.save(str(self.garth_home))
 
