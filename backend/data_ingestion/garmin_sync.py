@@ -42,12 +42,12 @@ class GarminSyncManager:
         if self._garth_client is not None:
             return self._garth_client
 
-        token_file = self.garth_home / "oauth1_token.json"
-        
         # WORKAROUND: garth crashes on import if GARTH_HOME exists but is empty (like a fresh Docker volume).
         # We temporarily unset the variable so it defaults to ~/.garth (which doesn't exist) and skips _auto_resume.
+        # Check for oauth2_token (garth 0.5+) OR oauth1_token.json (older) so the workaround fires correctly.
+        has_tokens = (self.garth_home / "oauth2_token").exists() or (self.garth_home / "oauth1_token.json").exists()
         old_garth_home = None
-        if not token_file.exists():
+        if not has_tokens:
             old_garth_home = os.environ.pop("GARTH_HOME", None)
 
         try:

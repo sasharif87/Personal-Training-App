@@ -1,7 +1,4 @@
 /* frontend/src/main.js */
-import './styles/layout.css';
-import './styles/components.css';
-
 import * as Dashboard from './views/dashboard.js';
 import * as Planner   from './views/planner.js';
 import * as Library   from './views/library.js';

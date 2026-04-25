@@ -15,7 +15,6 @@ import os
 import re
 import sys
 import threading
-import time
 import urllib.request
 from datetime import datetime
 
@@ -27,15 +26,16 @@ from datetime import datetime
 # ---------------------------------------------------------------------------
 MODEL_PREFERENCES = {
     "reason": [
-        # TrueNAS pool — Quadro RTX 5000 16GB
-        "deepseek-r1:32b", "deepseek-r1:14b", "deepseek-r1:8b",
-        "qwen2.5:14b",             # on TrueNAS: best available reason model
-        "qwen2.5:32b",
-        "qwen3:32b", "qwen3:14b",
+        # Gaming rig first (code_url) — 32B preferred for consolidation quality
+        "deepseek-r1:32b",
+        "qwen2.5-coder:32b", "qwen2.5:32b", "qwen3:32b",
+        # TrueNAS fallback — Quadro RTX 5000 16GB
+        "deepseek-r1:14b", "deepseek-r1:8b",
+        "qwen2.5:14b", "qwen3:14b",
         "llama3.1:70b", "llama3.1:8b",
         "gemma2:27b", "gemma2:9b",
-        "mistral-small:latest",    # on TrueNAS: 23.6B, strong reasoner fallback
-        "deepseek-coder-v2:16b",   # on TrueNAS: fallback — can reason okay
+        "mistral-small:latest",
+        "deepseek-coder-v2:16b",
     ],
     "code": [
         # Large models — gaming rig (7800XT 16GB, 9950X3D)
@@ -150,43 +150,62 @@ class Engine:
                 self._resolved_hosts[role] = self.code_url if role == "code" else self.url
                 continue
 
-            # Route code role to the code host pool; others use the primary pool.
-            # If the code host is unavailable, fall back to the primary pool AND
-            # remember to send requests there too — not to the dead code_url.
+            # Route code+reason to gaming rig (code_url); quick stays on TrueNAS.
+            # reason falls back to TrueNAS pool if nothing usable on gaming rig.
             code_host_available = bool(self._available_code)
             if role == "code":
                 pool = self._available_code if code_host_available else (self._available or [])
                 preferred_host = self.code_url if code_host_available else self.url
-            else:
+                fallback_pool, fallback_host = [], None
+            elif role == "reason":
+                # Prefer gaming rig (32B) for consolidation quality; fall back to TrueNAS
+                if code_host_available:
+                    pool = self._available_code
+                    preferred_host = self.code_url
+                    fallback_pool = self._available or []
+                    fallback_host = self.url
+                else:
+                    pool = self._available or []
+                    preferred_host = self.url
+                    fallback_pool, fallback_host = [], None
+            else:  # quick
                 pool = self._available or []
                 preferred_host = self.url
+                fallback_pool, fallback_host = [], None
 
             if not pool:
                 pool = self._available or []
                 preferred_host = self.url
 
-            # Walk preference list, pick first available in the right pool
-            for pref in MODEL_PREFERENCES[role]:
-                if pref in pool:
-                    self._resolved[role] = pref
-                    break
-                # Partial match — only when pref has no size tag (e.g. "deepseek-coder-v2"
-                # matches "deepseek-coder-v2:16b").  Never let a sized preference like
-                # "qwen2.5-coder:7b" silently resolve to a larger variant like :32b.
-                pref_base, pref_size = (pref.split(":", 1) + [""])[:2]
-                if not pref_size:
-                    for avail in pool:
-                        if pref_base in avail:
-                            self._resolved[role] = avail
-                            break
-                if role in self._resolved:
-                    break
+            def _pick(search_pool):
+                for pref in MODEL_PREFERENCES[role]:
+                    if pref in search_pool:
+                        return pref
+                    pref_base, pref_size = (pref.split(":", 1) + [""])[:2]
+                    if not pref_size:
+                        for avail in search_pool:
+                            if pref_base in avail:
+                                return avail
+                return None
 
-            # Ultimate fallback — use whatever's available in that pool
-            if role not in self._resolved and pool:
-                self._resolved[role] = pool[0]
+            found = _pick(pool)
+            if found:
+                self._resolved[role] = found
+                self._resolved_hosts[role] = preferred_host
+            elif fallback_pool:
+                found = _pick(fallback_pool)
+                if found:
+                    self._resolved[role] = found
+                    self._resolved_hosts[role] = fallback_host
 
-            self._resolved_hosts[role] = preferred_host
+            # Ultimate fallback — use whatever's available
+            if role not in self._resolved:
+                if pool:
+                    self._resolved[role] = pool[0]
+                    self._resolved_hosts[role] = preferred_host
+                elif fallback_pool:
+                    self._resolved[role] = fallback_pool[0]
+                    self._resolved_hosts[role] = fallback_host
 
     def model_for(self, role):
         """Get the resolved model name for a role."""
@@ -198,14 +217,12 @@ class Engine:
         """Print which model is assigned to which role and which host."""
         if not self._resolved:
             self._resolve_models()
-        dual = self.code_url != self.url
         print(f"\n  Model assignments:")
         for role in ("reason", "code", "quick"):
             model = self._resolved.get(role, "?")
             pinned = " (pinned)" if role in self.pinned else " (auto)"
-            host = self.code_url if (dual and role == "code") else self.url
-            host_label = f"  [{host}]" if dual else ""
-            print(f"    {role:<8} -> {model}{pinned}{host_label}")
+            host = self._resolved_hosts.get(role, self.url)
+            print(f"    {role:<8} -> {model}{pinned}  [{host}]")
         print()
 
     # ── Generation ───────────────────────────────────────────────────────────

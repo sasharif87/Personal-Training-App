@@ -229,7 +229,15 @@ def _load_weights() -> Dict[str, Any]:
             return json.loads(_WEIGHTS_FILE.read_text(encoding="utf-8"))
         except Exception:
             pass
-    return _DEFAULT_WEIGHTS.copy()
+    # First run — write defaults to disk so the file exists for future learned updates
+    defaults = _DEFAULT_WEIGHTS.copy()
+    try:
+        _WEIGHTS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _WEIGHTS_FILE.write_text(json.dumps(defaults, indent=2), encoding="utf-8")
+        logger.info("Signal weights seeded with defaults at %s", _WEIGHTS_FILE)
+    except OSError as exc:
+        logger.warning("Could not write default signal weights: %s", exc)
+    return defaults
 
 
 def _save_weights(weights: Dict[str, Any]) -> None:

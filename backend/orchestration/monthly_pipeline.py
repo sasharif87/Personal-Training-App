@@ -80,6 +80,13 @@ class MonthlyPipeline:
             for r in races
         ]
 
+        # --- Vacation windows ---
+        vacations = []
+        try:
+            vacations = self.postgres.get_upcoming_vacations()
+        except Exception as exc:
+            logger.warning("Could not load vacation windows (non-fatal): %s", exc)
+
         # --- Prior month execution summary ---
         prior_scores = self.postgres.get_recent_execution_summary(days=30)
         prior_summary = {
@@ -97,16 +104,25 @@ class MonthlyPipeline:
             race_calendar=race_calendar,
             prior_month_summary=prior_summary,
             retrieved_history=retrieved,
+            vacation_windows=vacations,
         )
 
         # --- LLM call ---
         logger.info("Calling Ollama monthly generation (model: %s)", self.llm.model)
-        raw = self.llm.generate_monthly_plan(context)
-
         try:
+            raw = self.llm.generate_monthly_plan(context)
             plan = MonthPlan.model_validate(raw)
         except Exception as exc:
-            logger.error("MonthPlan validation failed: %s", exc)
+            logger.error("MonthPlan generation/validation failed: %s", exc)
+            # Fallback: return previous active plan so the pipeline doesn't leave
+            # the athlete with no plan for the month.
+            prev = self.postgres.get_active_monthly_plan()
+            if prev:
+                logger.warning("Returning previous active plan as fallback")
+                try:
+                    return MonthPlan.model_validate(prev)
+                except Exception:
+                    pass
             raise
 
         logger.info(
@@ -120,4 +136,49 @@ class MonthlyPipeline:
             self.postgres.save_monthly_plan(plan_dict)
             logger.info("Monthly plan stored in PostgreSQL")
 
+            # Seed ChromaDB with this block for future RAG retrieval
+            _seed_chromadb(self.vector_db, plan, fitness)
+
         return plan
+
+
+# ---------------------------------------------------------------------------
+# ChromaDB seeding
+# ---------------------------------------------------------------------------
+def _seed_chromadb(vector_db: VectorDB, plan: "MonthPlan", fitness: dict) -> None:
+    """Store the generated block summary in ChromaDB for future RAG retrieval."""
+    try:
+        week_summaries = []
+        for week in plan.weeks:
+            sessions = []
+            for day in (week.days or []):
+                if day.primary:
+                    sessions.append(f"{day.primary.sport} {day.primary.title} ~{day.primary.estimated_tss:.0f}TSS")
+            week_summaries.append(
+                f"Week {week.week_number} ({week.block_phase}): target {week.target_tss}TSS — "
+                + ", ".join(sessions[:4])
+            )
+
+        text = (
+            f"Block: {plan.block_phase} | "
+            f"CTL {fitness.get('ctl', 0):.0f} ATL {fitness.get('atl', 0):.0f} TSB {fitness.get('tsb', 0):.0f} | "
+            f"HRV: {fitness.get('hrv_trend', 'unknown')}\n"
+            + "\n".join(week_summaries)
+        )
+
+        block_id = f"{plan.block_phase}_{date.today().isoformat()}"
+        vector_db.store_block(
+            block_id=block_id,
+            text=text,
+            metadata={
+                "phase": plan.block_phase,
+                "generated_at": date.today().isoformat(),
+                "ctl": fitness.get("ctl", 0),
+                "atl": fitness.get("atl", 0),
+                "tsb": fitness.get("tsb", 0),
+                "rationale": plan.month_rationale or "",
+            },
+        )
+        logger.info("Block seeded to ChromaDB: %s", block_id)
+    except Exception as exc:
+        logger.warning("ChromaDB seed failed (non-fatal): %s", exc)

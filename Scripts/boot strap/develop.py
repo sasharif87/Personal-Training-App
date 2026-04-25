@@ -254,7 +254,7 @@ class Developer:
 
         t0 = time.time()
         try:
-            response = self.engine.generate(prompt, role=role, num_ctx=ctx, timeout=600)
+            response = self.engine.generate(prompt, role=role, num_ctx=ctx, timeout=1800)
             plan = extract_json(response)
             log(f"  Plan extracted in {fmt_time(time.time() - t0)}")
             return plan

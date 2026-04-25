@@ -79,9 +79,7 @@ Optional fields (include if present on page):
 Page content:
 {text}"""
 
-    raw = llm_client.generate_monthly_plan(
-        {"prompt_type": "extraction", "prompt": extraction_prompt}
-    )
+    raw = llm_client.generate_json(extraction_prompt)
 
     if isinstance(raw, str):
         raw = json.loads(raw)

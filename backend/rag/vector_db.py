@@ -24,8 +24,9 @@ class VectorDB:
         if chroma_host:
             try:
                 self._client = chromadb.HttpClient(host=chroma_host, port=chroma_port)
-                # Verify connectivity
-                self._client.heartbeat()
+                # Verify connectivity — heartbeat() is deprecated in chromadb 1.x (v2 API);
+                # count() on the default tenant is a lightweight liveness check that works on both versions.
+                self._client.list_collections()
                 logger.info("ChromaDB connected via HTTP: %s:%d", chroma_host, chroma_port)
             except Exception as exc:
                 logger.warning(

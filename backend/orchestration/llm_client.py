@@ -284,6 +284,7 @@ def build_monthly_generation_context(
     race_calendar: list,
     prior_month_summary: Optional[Dict] = None,
     retrieved_history: Optional[list] = None,
+    vacation_windows: Optional[list] = None,
 ) -> Dict[str, Any]:
     return {
         "prompt_type": "monthly_generation",
@@ -292,6 +293,7 @@ def build_monthly_generation_context(
         "race_calendar": race_calendar,
         "prior_month_summary": prior_month_summary or {},
         "retrieved_history": retrieved_history or [],
+        "vacation_windows": vacation_windows or [],
     }
 
 

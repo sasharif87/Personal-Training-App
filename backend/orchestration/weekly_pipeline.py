@@ -109,13 +109,25 @@ class WeeklyPipeline:
 
         # --- LLM call ---
         logger.info("Calling Ollama weekly review (model: %s)", self.llm.model)
-        raw = self.llm.generate_weekly_review(context)
-
         try:
+            raw = self.llm.generate_weekly_review(context)
             revised_week = WeekPlan.model_validate(raw)
         except Exception as exc:
-            logger.error("WeekPlan validation failed: %s", exc)
-            raise
+            logger.error("Weekly review LLM/validation failed: %s — returning original week unchanged", exc)
+            if not dry_run:
+                self.notifier.pipeline_failure("Weekly review", f"LLM failed ({exc}) — original week kept")
+            # Return the original week as a WeekPlan so callers don't crash
+            try:
+                revised_week = WeekPlan.model_validate(coming_week)
+            except Exception:
+                revised_week = WeekPlan(
+                    week_number=coming_week.get("week_number", week_number),
+                    block_phase=coming_week.get("block_phase", self.cfg.block_phase()),
+                    target_tss=coming_week.get("target_tss", 0),
+                    days=coming_week.get("days", []),
+                    sessions=coming_week.get("sessions", []),
+                )
+            return revised_week
 
         logger.info(
             "Weekly review complete — %s changes: %s",

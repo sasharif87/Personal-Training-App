@@ -18,8 +18,9 @@ influxdb-client>=1.38
 # Vector storage & RAG
 chromadb>=0.4
 
-# Weather data
+# Weather data + HTML parsing
 requests>=2.31
+beautifulsoup4>=4.12
 
 # Config UI
 fastapi>=0.110
