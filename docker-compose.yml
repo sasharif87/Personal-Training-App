@@ -1,16 +1,21 @@
-# AI Coaching System — Docker Compose
-# Deploy on TrueNAS SCALE via Custom App or Portainer
+# AI Coaching System — Portainer Stack
+# Deploy on TrueNAS SCALE via Portainer → Stacks → Add Stack
 #
-# TrueNAS dataset layout (edit paths to match your pool):
+# Before deploying:
+#   1. Create datasets under your pool, e.g. /mnt/tank/coaching/
+#   2. Fill in all environment variables in Portainer's env editor
+#   3. Make the GitHub package public OR add a GHCR_TOKEN secret for Watchtower
+#
+# TrueNAS dataset layout:
 #   /mnt/<pool>/coaching/influxdb/
+#   /mnt/<pool>/coaching/postgres/
 #   /mnt/<pool>/coaching/chromadb/
 #   /mnt/<pool>/coaching/grafana/
-#   /mnt/<pool>/coaching/garmin/          ← FIT archive + garmindb SQLite
-#   /mnt/<pool>/coaching/garth/           ← garth session tokens
+#   /mnt/<pool>/coaching/garmin/
+#   /mnt/<pool>/coaching/garth/
 #   /mnt/<pool>/coaching/logs/
-#   /mnt/<pool>/coaching/zwift_workouts/  ← drop .zwo here (or Syncthing target)
-#
-# Ollama runs externally — set OLLAMA_BASE_URL / OLLAMA_FALLBACK_URL in .env
+#   /mnt/<pool>/coaching/config/
+#   /mnt/<pool>/coaching/workout_imports/
 
 services:
 
@@ -40,9 +45,7 @@ services:
       retries: 5
     logging:
       driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
+      options: { max-size: "10m", max-file: "3" }
 
   # ---------------------------------------------------------------------------
   # PostgreSQL 16 — relational storage (plans, execution, TR library)
@@ -66,31 +69,27 @@ services:
       retries: 5
     logging:
       driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
+      options: { max-size: "10m", max-file: "3" }
 
   # ---------------------------------------------------------------------------
-  # ChromaDB — vector store for RAG (historical training block embeddings)
+  # ChromaDB — vector store for RAG
   # ---------------------------------------------------------------------------
   chromadb:
     image: chromadb/chroma:latest
     container_name: coaching_chromadb
     restart: unless-stopped
     ports:
-      - "8000:8000"
+      - "8001:8000"
     volumes:
       - chromadb-data:/chroma/chroma
     environment:
       ANONYMIZED_TELEMETRY: "false"
     logging:
       driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
+      options: { max-size: "10m", max-file: "3" }
 
   # ---------------------------------------------------------------------------
-  # Grafana — fitness dashboards (CTL/ATL/TSB, HRV, plan vs actual)
+  # Grafana — fitness dashboards
   # ---------------------------------------------------------------------------
   grafana:
     image: grafana/grafana:latest
@@ -102,26 +101,21 @@ services:
       GF_SECURITY_ADMIN_USER: ${GRAFANA_USER:-admin}
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD}
       GF_INSTALL_PLUGINS: grafana-clock-panel,grafana-simple-json-datasource
-      GF_SERVER_ROOT_URL: http://localhost:3000
+      GF_SERVER_ROOT_URL: http://${TRUENAS_IP:-localhost}:3000
     volumes:
       - grafana-data:/var/lib/grafana
-      - ./grafana/provisioning:/etc/grafana/provisioning:ro
     depends_on:
       influxdb:
         condition: service_healthy
     logging:
       driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
+      options: { max-size: "10m", max-file: "3" }
 
   # ---------------------------------------------------------------------------
-  # Config UI — season/block/race/athlete config form (port 8080)
+  # Config UI + API — FastAPI backend (pulls from GHCR)
   # ---------------------------------------------------------------------------
   config-ui:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: ghcr.io/sasharif87/personal-training-app:latest
     container_name: coaching_config_ui
     restart: unless-stopped
     ports:
@@ -129,7 +123,7 @@ services:
     environment:
       CONFIG_API_KEY: ${CONFIG_API_KEY}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8080,http://localhost:3000}
-      OLLAMA_PRIMARY_URL: ${OLLAMA_PRIMARY_URL:-http://host.docker.internal:11434}
+      OLLAMA_PRIMARY_URL: ${OLLAMA_PRIMARY_URL:-http://192.168.50.46:11434}
       OLLAMA_FALLBACK_URL: ${OLLAMA_FALLBACK_URL:-}
       OLLAMA_HEAVY_MODEL: ${OLLAMA_HEAVY_MODEL:-qwen2.5:72b}
       OLLAMA_FAST_MODEL: ${OLLAMA_FAST_MODEL:-qwen2.5:14b}
@@ -148,32 +142,29 @@ services:
     depends_on:
       influxdb:
         condition: service_healthy
+      postgres:
+        condition: service_healthy
     logging:
       driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
+      options: { max-size: "10m", max-file: "3" }
 
   # ---------------------------------------------------------------------------
-  # Coaching App — daily pipeline + manual triggers
-  # Ollama is NOT containerised — runs externally on 192.168.50.46:11434
+  # Coaching App — daily pipeline + APScheduler daemon (pulls from GHCR)
   # ---------------------------------------------------------------------------
   coaching-app:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: ghcr.io/sasharif87/personal-training-app:latest
     container_name: coaching_app
     restart: unless-stopped
     environment:
-      OLLAMA_PRIMARY_URL: ${OLLAMA_PRIMARY_URL:-http://your-ollama-host:11434}
-      OLLAMA_FALLBACK_URL: ${OLLAMA_FALLBACK_URL:-http://your-ollama-fallback:11434}
+      OLLAMA_PRIMARY_URL: ${OLLAMA_PRIMARY_URL:-http://192.168.50.46:11434}
+      OLLAMA_FALLBACK_URL: ${OLLAMA_FALLBACK_URL:-}
       OLLAMA_HEAVY_MODEL: ${OLLAMA_HEAVY_MODEL:-qwen2.5:72b}
-      OLLAMA_FAST_MODEL: ${OLLAMA_FAST_MODEL:-llama3.1:8b}
+      OLLAMA_FAST_MODEL: ${OLLAMA_FAST_MODEL:-qwen2.5:14b}
       INFLUXDB_URL: http://influxdb:8086
       INFLUXDB_TOKEN: ${INFLUXDB_TOKEN}
       INFLUXDB_ORG: ${INFLUXDB_ORG:-coaching}
       INFLUXDB_BUCKET: ${INFLUXDB_BUCKET:-training}
-      DATABASE_URL: postgresql://${POSTGRES_USER:-coaching}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-coaching_db}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-coaching}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-coaching_db}
       CHROMADB_HOST: chromadb
       CHROMADB_PORT: "8000"
       GARMIN_USERNAME: ${GARMIN_USERNAME}
@@ -184,21 +175,18 @@ services:
       LOG_DIR: /data/logs
       SEASON_CONFIG_PATH: /config/season.json
       NTFY_URL: ${NTFY_URL:-https://ntfy.sh}
-      NTFY_TOPIC: ${NTFY_TOPIC:-training-coach}
+      NTFY_TOPIC: ${NTFY_TOPIC}
       NTFY_TOKEN: ${NTFY_TOKEN:-}
       WORKOUTS_CONFIG_DIR: /app/config/workouts
       WORKOUT_IMPORT_DIR: /data/workout_imports
-      CRON_DAILY: ${CRON_DAILY:-"0 3 * * *"}
-      CRON_WEEKLY: ${CRON_WEEKLY:-"0 2 * * 1"}   # 2 AM every Monday
-      CRON_MONTHLY: ${CRON_MONTHLY:-"0 1 1 * *"} # 1 AM on the 1st
       TZ: ${TZ:-UTC}
     volumes:
       - garmin-data:/data/garmin
       - garth-tokens:/data/garth
-      - zwift-workouts:/data/zwift_workouts
+      - workout-imports:/data/workout_imports
       - logs:/data/logs
       - season-config:/config
-      - workout-imports:/data/workout_imports
+    command: python main.py --daemon
     depends_on:
       influxdb:
         condition: service_healthy
@@ -206,11 +194,6 @@ services:
         condition: service_started
       postgres:
         condition: service_healthy
-    # Default: stay alive so you can exec in or trigger manually
-    # The 3 AM cron is managed by the app's internal APScheduler
-    command: python main.py --daemon
-    # Healthcheck: verifies APScheduler is alive by touching a heartbeat file
-    # main.py --daemon must write /tmp/scheduler_heartbeat on each tick
     healthcheck:
       test: ["CMD", "find", "/tmp/scheduler_heartbeat", "-mmin", "-6"]
       interval: 5m
@@ -219,13 +202,10 @@ services:
       start_period: 60s
     logging:
       driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
+      options: { max-size: "10m", max-file: "3" }
 
   # ---------------------------------------------------------------------------
-  # DB Backup — weekly pg_dump into /data/logs so TrueNAS snapshots capture it
-  # Runs every Sunday at 01:00. Keeps last 4 dumps (one per week).
+  # DB Backup — weekly pg_dump, keeps last 4
   # ---------------------------------------------------------------------------
   db-backup:
     image: postgres:16
@@ -241,7 +221,7 @@ services:
       /bin/sh -c "
         while true; do
           DUMP_FILE=/data/logs/pg_backup_$$(date +%Y%m%d_%H%M%S).sql;
-          pg_dump -h postgres -U $$POSTGRES_USER $$POSTGRES_DB > $$DUMP_FILE && echo \"Backup written: $$DUMP_FILE\";
+          pg_dump -h postgres -U $$POSTGRES_USER $$POSTGRES_DB > $$DUMP_FILE && echo \"Backup: $$DUMP_FILE\";
           ls -1t /data/logs/pg_backup_*.sql 2>/dev/null | tail -n +5 | xargs -r rm --;
           sleep 604800;
         done
@@ -251,25 +231,60 @@ services:
         condition: service_healthy
     logging:
       driver: "json-file"
-      options:
-        max-size: "5m"
-        max-file: "2"
+      options: { max-size: "5m", max-file: "2" }
+
+  # ---------------------------------------------------------------------------
+  # Watchtower — polls GHCR every 5 min, auto-redeploys on new image push
+  # ---------------------------------------------------------------------------
+  watchtower:
+    image: containrrr/watchtower:latest
+    container_name: coaching_watchtower
+    restart: unless-stopped
+    environment:
+      WATCHTOWER_POLL_INTERVAL: "300"
+      WATCHTOWER_CLEANUP: "true"
+      WATCHTOWER_INCLUDE_STOPPED: "false"
+      WATCHTOWER_SCOPE: coaching
+      REPO_USER: ${GHCR_USER:-sasharif87}
+      REPO_PASS: ${GHCR_TOKEN}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    command: coaching_config_ui coaching_app
+    logging:
+      driver: "json-file"
+      options: { max-size: "5m", max-file: "2" }
 
 # ---------------------------------------------------------------------------
-# Volumes
-# On TrueNAS: replace these with bind mounts to your datasets, e.g.:
-#   driver: local
-#   driver_opts: { type: none, device: /mnt/pool/coaching/influxdb, o: bind }
+# Volumes — update device paths to match your TrueNAS pool/dataset layout
 # ---------------------------------------------------------------------------
 volumes:
   influxdb-data:
+    driver: local
+    driver_opts: { type: none, device: /mnt/tank/coaching/influxdb, o: bind }
   influxdb-config:
+    driver: local
+    driver_opts: { type: none, device: /mnt/tank/coaching/influxdb, o: bind }
   postgres-data:
+    driver: local
+    driver_opts: { type: none, device: /mnt/tank/coaching/postgres, o: bind }
   chromadb-data:
+    driver: local
+    driver_opts: { type: none, device: /mnt/tank/coaching/chromadb, o: bind }
   grafana-data:
+    driver: local
+    driver_opts: { type: none, device: /mnt/tank/coaching/grafana, o: bind }
   garmin-data:
+    driver: local
+    driver_opts: { type: none, device: /mnt/tank/coaching/garmin, o: bind }
   garth-tokens:
-  zwift-workouts:
+    driver: local
+    driver_opts: { type: none, device: /mnt/tank/coaching/garth, o: bind }
   logs:
+    driver: local
+    driver_opts: { type: none, device: /mnt/tank/coaching/logs, o: bind }
   season-config:
+    driver: local
+    driver_opts: { type: none, device: /mnt/tank/coaching/config, o: bind }
   workout-imports:
+    driver: local
+    driver_opts: { type: none, device: /mnt/tank/coaching/workout_imports, o: bind }
