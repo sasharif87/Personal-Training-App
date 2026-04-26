@@ -14,18 +14,18 @@ Model switching happens automatically:
   - Quick model for classification and yes/no decisions
 
 Usage:
-    python scripts/drop.py                             # detect + show plan
-    python scripts/drop.py develop                     # scaffold from arch doc
-    python scripts/drop.py develop --apply             # write scaffolded files
-    python scripts/drop.py test                        # generate test suites
-    python scripts/drop.py test --apply                # write test files
-    python scripts/drop.py review                      # code review
-    python scripts/drop.py fix --apply                 # apply review fixes
-    python scripts/drop.py all                         # full pipeline (dry-run)
-    python scripts/drop.py all --apply                 # full pipeline (write)
+    python "Scripts/boot strap/drop.py"                             # detect + show plan
+    python "Scripts/boot strap/drop.py" develop                     # scaffold from arch doc
+    python "Scripts/boot strap/drop.py" develop --apply             # write scaffolded files
+    python "Scripts/boot strap/drop.py" test                        # generate test suites
+    python "Scripts/boot strap/drop.py" test --apply                # write test files
+    python "Scripts/boot strap/drop.py" review                      # code review
+    python "Scripts/boot strap/drop.py" fix --apply                 # apply review fixes
+    python "Scripts/boot strap/drop.py" all                         # full pipeline (dry-run)
+    python "Scripts/boot strap/drop.py" all --apply                 # full pipeline (write)
 
-    python scripts/drop.py --layer api,db develop      # target specific layers
-    python scripts/drop.py --reason-model deepseek-r1:14b develop
+    python "Scripts/boot strap/drop.py" --layer api,db develop      # target specific layers
+    python "Scripts/boot strap/drop.py" --reason-model deepseek-r1:14b develop
 
     python scripts/drop.py --url http://192.168.50.46:11434  # custom Ollama URL
 """

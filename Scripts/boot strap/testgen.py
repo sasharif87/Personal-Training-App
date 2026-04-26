@@ -4,10 +4,10 @@ testgen.py — Generate test suites from existing source code.
 Uses quick model to analyze what tests are needed, code model to write them.
 
 Usage:
-    python scripts/testgen.py                    # dry-run
-    python scripts/testgen.py --apply            # write tests
-    python scripts/testgen.py --layer api        # specific layer
-    python scripts/testgen.py --integration      # include integration tests
+    python "Scripts/boot strap/testgen.py"                    # dry-run
+    python "Scripts/boot strap/testgen.py" --apply            # write tests
+    python "Scripts/boot strap/testgen.py" --layer api        # specific layer
+    python "Scripts/boot strap/testgen.py" --integration      # include integration tests
 """
 
 import argparse
