@@ -1,0 +1,37 @@
+name: Deploy to TrueNAS
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    name: SSH deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Deploy to TrueNAS via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.TRUENAS_HOST }}
+          username: ${{ secrets.TRUENAS_USER }}
+          key: ${{ secrets.TRUENAS_SSH_KEY }}
+          port: ${{ secrets.TRUENAS_PORT || 22 }}
+          script_stop: true
+          script: |
+            set -e
+            cd ${{ secrets.APP_DIR }}
+
+            echo "--- pulling latest ---"
+            git pull origin main
+
+            echo "--- rebuilding changed services ---"
+            docker compose up -d --build --remove-orphans
+
+            echo "--- pruning old images ---"
+            docker image prune -f
+
+            echo "--- deploy complete ---"
+            docker compose ps
