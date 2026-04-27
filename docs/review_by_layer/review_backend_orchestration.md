@@ -1,7 +1,4 @@
-# Personal training app — Code Review
-
-**Date**: 2026-04-25 23:39  
-**Code model**: `qwen3-coder:latest`  
+# Backend / Orchestration — Review
 
 ---
 
@@ -45,33 +42,3 @@ Line 100: `vector_db.store_block(...)`
 
 ---
 
-## `backend/config_manager.py`
-
-**Error**: timed out
-
----
-
-## `frontend/src/components/toast.js`
-
-**Error**: timed out
-
----
-
-## `tmp/diag_engine.py`
-
-**Error**: timed out
-
----
-
-
----
-
-# Summary
-
-| Metric | Count |
-|---|---|
-| total | 81 |
-| issues | 6 |
-| clean | 75 |
-| skipped | 0 |
-| grounding_dropped | 6 |

@@ -75,7 +75,7 @@ services:
   # ChromaDB — vector store for RAG
   # ---------------------------------------------------------------------------
   chromadb:
-    image: chromadb/chroma:latest
+    image: chromadb/chroma:latest  # TODO: pin to specific version, e.g. chromadb/chroma:1.0.12
     container_name: coaching_chromadb
     restart: unless-stopped
     ports:
@@ -92,7 +92,7 @@ services:
   # Grafana — fitness dashboards
   # ---------------------------------------------------------------------------
   grafana:
-    image: grafana/grafana:latest
+    image: grafana/grafana:latest  # TODO: pin to specific version, e.g. grafana/grafana:12.0.0
     container_name: coaching_grafana
     restart: unless-stopped
     ports:
@@ -237,7 +237,7 @@ services:
   # Watchtower — polls GHCR every 5 min, auto-redeploys on new image push
   # ---------------------------------------------------------------------------
   watchtower:
-    image: containrrr/watchtower:latest
+    image: containrrr/watchtower:latest  # TODO: pin to specific version, e.g. containrrr/watchtower:1.7.1
     container_name: coaching_watchtower
     restart: unless-stopped
     environment:

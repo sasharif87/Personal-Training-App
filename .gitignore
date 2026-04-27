@@ -33,6 +33,7 @@ qdrant_storage/
 
 # Environment
 .env
+.env.prod
 .venv
 env/
 venv/
