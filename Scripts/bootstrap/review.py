@@ -5,10 +5,10 @@ Uses the code model for per-file review, reasoning model for consolidation.
 Auto-generates rules if none exist. Strips hallucinated findings via grounding check.
 
 Usage:
-    python "scripts/boot strap/review.py"                           # review all
-    python "scripts/boot strap/review.py" --layer api,db            # specific layers
-    python "scripts/boot strap/review.py" --file backend/api/main.py
-    python "scripts/boot strap/review.py" --skip-consolidation
+    python scripts/bootstrap/review.py                           # review all
+    python scripts/bootstrap/review.py --layer api,db            # specific layers
+    python scripts/bootstrap/review.py --file backend/api/main.py
+    python scripts/bootstrap/review.py --skip-consolidation
 """
 
 import argparse

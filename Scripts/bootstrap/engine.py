@@ -26,44 +26,42 @@ from datetime import datetime
 # ---------------------------------------------------------------------------
 MODEL_PREFERENCES = {
     "reason": [
-        # Gaming rig first (code_url) — 32B preferred for consolidation quality
-        "deepseek-r1:32b",
-        "qwen2.5-coder:32b", "qwen2.5:32b", "qwen3:32b",
-        # TrueNAS fallback — Quadro RTX 5000 16GB
-        "deepseek-r1:14b", "deepseek-r1:8b",
-        "qwen2.5:14b", "qwen3:14b",
-        "llama3.1:70b", "llama3.1:8b",
-        "gemma2:27b", "gemma2:9b",
-        "mistral-small:latest",
+        # Gaming rig — largest available models for best consolidation quality
+        "qwen2.5:72b", "llama3.3:70b",
+        "deepseek-r1:32b", "qwen2.5:32b", "qwen3:32b",
+        "qwen2.5-coder:32b",
+        # Fallback — mid-range
+        "deepseek-r1:14b", "qwen2.5:14b", "qwen3:14b",
+        "mistral-small:latest", "gemma2:9b",
         "deepseek-coder-v2:16b",
     ],
     "code": [
-        # Large models — gaming rig (7800XT 16GB, 9950X3D)
-        "qwen2.5:72b", "qwen2.5-coder:32b",
-        # Mid-range
+        # Gaming rig — qwen3-coder preferred (newer arch, ~30B); 2.5-coder:32b fallback
+        "qwen3-coder", "qwen2.5-coder:32b",
+        "qwen2.5:72b",
+        # Mid-range fallback
         "qwen2.5-coder:14b", "qwen2.5-coder:7b",
-        "deepseek-coder-v2:16b",  # older architecture — fallback if no qwen2.5-coder available
+        "deepseek-coder-v2:16b",
         "codellama:34b", "codellama:13b",
-        "deepseek-r1:14b",  # fallback — can code okay
         "llama3.1:8b",
     ],
     "quick": [
-        # TrueNAS pool — ordered by speed vs capability
-        "qwen2.5-coder:7b",        # ideal: fast + code-aware (pull if available)
-        "qwen2.5-coder:14b",       # on TrueNAS: best available quick model
+        # Fast + code-aware
+        "qwen2.5-coder:7b",
+        "qwen2.5-coder:14b",
         "qwen2.5:14b", "qwen2.5:7b",
-        "gemma2:9b", "llama3.1:8b", "llama3.2:3b",
+        "gemma2:9b", "llama3.2:3b",
         "phi3:mini",
-        "deepseek-coder-v2:16b",   # fallback
+        "deepseek-coder-v2:16b",
         "mistral:7b-instruct",
     ],
 }
 
 # Context windows and temperature defaults per role
 CTX_DEFAULTS = {
-    "reason": 16384,
+    "reason": 32768,
     "code": 32768,
-    "quick": 4096,
+    "quick": 8192,
 }
 
 TEMP_DEFAULTS = {
@@ -78,19 +76,19 @@ TEMP_DEFAULTS = {
 # ---------------------------------------------------------------------------
 class Engine:
 
-    def __init__(self, url="http://192.168.50.46:11434",
-                 code_url="http://192.168.50.250:11434", models=None):
+    def __init__(self, url="http://localhost:11434",
+                 code_url="http://localhost:11434", models=None):
         """
         Args:
             url:      Ollama URL for quick + reason roles.
-                      Default: TrueNAS (i5-7600 + Quadro RTX 5000 16GB)
+                      Default: localhost (gaming rig — 9950X3D + 7800XT 16GB)
                         quick  -> qwen2.5-coder:7b
-                        reason -> deepseek-r1:14b
+                        reason -> qwen2.5:72b
             code_url: Ollama URL for code role. Falls back to `url` if omitted.
-                      Default: gaming rig (9950X3D + 7800XT 16GB)
-                        code   -> qwen2.5:72b
+                      Default: localhost (same machine)
+                        code   -> qwen2.5-coder:32b
             models:   Optional dict pinning roles to specific model names,
-                      e.g. {"reason": "deepseek-r1:14b", "code": "qwen2.5:72b"}
+                      e.g. {"reason": "qwen2.5:72b", "code": "qwen2.5-coder:32b"}
         """
         self.url = url.rstrip("/")
         self.code_url = (code_url or url).rstrip("/")
@@ -132,10 +130,10 @@ class Engine:
     def _resolve_models(self):
         """Pick the best available model for each role.
 
-        Routing:
-          code  -> self._available_code (gaming rig pool)
-          quick -> self._available       (TrueNAS pool)
-          reason-> self._available       (TrueNAS pool)
+        Routing (all localhost by default):
+          reason -> largest available (qwen2.5:72b preferred)
+          code   -> qwen2.5-coder:32b preferred
+          quick  -> qwen2.5-coder:7b preferred
         """
         if self._available is None:
             self.test()

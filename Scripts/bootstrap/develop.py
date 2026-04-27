@@ -7,10 +7,10 @@ Uses the code model to generate actual implementation files based on:
   - Generated layer rules (so code follows the rules from day one)
 
 Usage:
-    python "scripts/boot strap/develop.py"                           # dry-run
-    python "scripts/boot strap/develop.py" --apply                   # write files
-    python "scripts/boot strap/develop.py" --layer api,db            # specific layers
-    python "scripts/boot strap/develop.py" --plan-only               # just show what would be generated
+    python scripts/bootstrap/develop.py                           # dry-run
+    python scripts/bootstrap/develop.py --apply                   # write files
+    python scripts/bootstrap/develop.py --layer api,db            # specific layers
+    python scripts/bootstrap/develop.py --plan-only               # just show what would be generated
 """
 
 import argparse

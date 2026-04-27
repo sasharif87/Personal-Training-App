@@ -4,10 +4,10 @@ testgen.py — Generate test suites from existing source code.
 Uses quick model to analyze what tests are needed, code model to write them.
 
 Usage:
-    python "Scripts/boot strap/testgen.py"                    # dry-run
-    python "Scripts/boot strap/testgen.py" --apply            # write tests
-    python "Scripts/boot strap/testgen.py" --layer api        # specific layer
-    python "Scripts/boot strap/testgen.py" --integration      # include integration tests
+    python scripts/bootstrap/testgen.py                    # dry-run
+    python scripts/bootstrap/testgen.py --apply            # write tests
+    python scripts/bootstrap/testgen.py --layer api        # specific layer
+    python scripts/bootstrap/testgen.py --integration      # include integration tests
 """
 
 import argparse
@@ -148,7 +148,7 @@ class TestGenerator:
             # double-booking the same model and stalling Ollama.
             quick_role = "quick" if self.engine.model_for("quick") != self.engine.model_for("code") else "code"
             try:
-                resp = self.engine.generate(prompt, role=quick_role, num_ctx=4096, timeout=120)
+                resp = self.engine.generate(prompt, role=quick_role, num_ctx=8192, timeout=1800)
                 plan = extract_json(resp)
                 if plan and plan.get("testable"):
                     self.plans[rel] = plan

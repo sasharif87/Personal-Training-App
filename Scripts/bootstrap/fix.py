@@ -2,9 +2,9 @@
 fix.py — Apply code review fixes via Ollama.
 
 Usage:
-    python "Scripts/boot strap/fix.py"                         # dry-run
-    python "Scripts/boot strap/fix.py" --apply                 # write fixes
-    python "Scripts/boot strap/fix.py" --layer api --apply     # one layer
+    python scripts/bootstrap/fix.py                         # dry-run
+    python scripts/bootstrap/fix.py --apply                 # write fixes
+    python scripts/bootstrap/fix.py --layer api --apply     # one layer
 """
 
 import argparse

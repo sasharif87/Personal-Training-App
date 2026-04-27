@@ -14,20 +14,20 @@ Model switching happens automatically:
   - Quick model for classification and yes/no decisions
 
 Usage:
-    python "Scripts/boot strap/drop.py"                             # detect + show plan
-    python "Scripts/boot strap/drop.py" develop                     # scaffold from arch doc
-    python "Scripts/boot strap/drop.py" develop --apply             # write scaffolded files
-    python "Scripts/boot strap/drop.py" test                        # generate test suites
-    python "Scripts/boot strap/drop.py" test --apply                # write test files
-    python "Scripts/boot strap/drop.py" review                      # code review
-    python "Scripts/boot strap/drop.py" fix --apply                 # apply review fixes
-    python "Scripts/boot strap/drop.py" all                         # full pipeline (dry-run)
-    python "Scripts/boot strap/drop.py" all --apply                 # full pipeline (write)
+    python scripts/bootstrap/drop.py                             # detect + show plan
+    python scripts/bootstrap/drop.py develop                     # scaffold from arch doc
+    python scripts/bootstrap/drop.py develop --apply             # write scaffolded files
+    python scripts/bootstrap/drop.py test                        # generate test suites
+    python scripts/bootstrap/drop.py test --apply                # write test files
+    python scripts/bootstrap/drop.py review                      # code review
+    python scripts/bootstrap/drop.py fix --apply                 # apply review fixes
+    python scripts/bootstrap/drop.py all                         # full pipeline (dry-run)
+    python scripts/bootstrap/drop.py all --apply                 # full pipeline (write)
 
-    python "Scripts/boot strap/drop.py" --layer api,db develop      # target specific layers
-    python "Scripts/boot strap/drop.py" --reason-model deepseek-r1:14b develop
+    python scripts/bootstrap/drop.py --layer api,db develop      # target specific layers
+    python scripts/bootstrap/drop.py --reason-model deepseek-r1:14b develop
 
-    python scripts/drop.py --url http://192.168.50.46:11434  # custom Ollama URL
+    python scripts/bootstrap/drop.py --url http://192.168.50.46:11434  # use TrueNAS instead
 """
 
 import argparse
@@ -317,10 +317,10 @@ def main():
     )
 
     # Global options
-    parser.add_argument("--url", type=str, default="http://192.168.50.46:11434",
-                        help="Ollama URL for quick+reason roles — TrueNAS (default: http://192.168.50.46:11434)")
-    parser.add_argument("--code-url", type=str, default="http://192.168.50.250:11434",
-                        help="Ollama URL for code role — gaming rig (default: http://192.168.50.250:11434)")
+    parser.add_argument("--url", type=str, default="http://localhost:11434",
+                        help="Ollama URL for quick+reason roles (default: http://localhost:11434)")
+    parser.add_argument("--code-url", type=str, default="http://localhost:11434",
+                        help="Ollama URL for code role (default: http://localhost:11434)")
     parser.add_argument("--reason-model", type=str, help="Pin reasoning model")
     parser.add_argument("--code-model", type=str, help="Pin code model")
     parser.add_argument("--quick-model", type=str, help="Pin quick model")
